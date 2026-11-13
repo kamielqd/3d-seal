@@ -86,14 +86,17 @@ export default function Viewer({ mesh, orientation = 'face-down' }: { mesh: View
     controls.dampingFactor = 0.08;
     controls.target.set(0, 0, 8);
 
-    scene.add(new THREE.HemisphereLight(0xffffff, 0x9aa0a6, 1.1));
-    const key = new THREE.DirectionalLight(0xffffff, 1.6);
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x7d8288, 0.9));
+    const key = new THREE.DirectionalLight(0xffffff, 1.2);
     key.position.set(40, 60, 80);
     scene.add(key);
-    // 从下方照一盏：看章面时灯在上面会把凹槽照成一团黑
-    const under = new THREE.DirectionalLight(0xffffff, 1.1);
+    // 从下方照：看章面时主光在上面，凹槽会糊成一团黑
+    const under = new THREE.DirectionalLight(0xffffff, 1.9);
     under.position.set(-20, -70, 30);
     scene.add(under);
+    const under2 = new THREE.DirectionalLight(0xffffff, 0.9);
+    under2.position.set(30, -60, -25);
+    scene.add(under2);
     const fill = new THREE.DirectionalLight(0xffffff, 0.5);
     fill.position.set(-50, -30, 20);
     scene.add(fill);

@@ -50,6 +50,14 @@ export interface PreviewOptions {
   mirror: boolean;
   /** 四周留白（mm），默认 2 */
   paddingMm?: number;
+  /**
+   * 阴刻（凹）时必填：章面轮廓环（外环 CCW）。
+   * 阴刻的盖印结果是「图案留白、其余上墨」，所以要用 evenodd 把章面填满再把图案挖掉；
+   * 不传就还是按「图案上墨」画，阴刻场景下会完全画反。
+   */
+  faceRing?: Polygon2D;
+  /** true = 阴刻，配合 faceRing 使用 */
+  engraved?: boolean;
   paper?: PaperStyle;
   ink?: InkStyle;
 }
@@ -119,7 +127,12 @@ function valueNoise(x: number, y: number): number {
 /* 纯像素光栅化（不依赖 canvas，可无头运行/单测）                       */
 /* ------------------------------------------------------------------ */
 
-export function rasterizePreview(polys: Polygon2D[], opts: PreviewOptions): RasterResult {
+export function rasterizePreview(inputPolys: Polygon2D[], opts: PreviewOptions): RasterResult {
+  // 阴刻：先把章面整个填上墨，再用 evenodd 把图案挖空（图案的孔会重新变回有墨）
+  const polys =
+    opts.engraved && opts.faceRing
+      ? [opts.faceRing, ...inputPolys]
+      : inputPolys;
   const dpi = opts.dpi ?? 300;
   const pad = opts.paddingMm ?? 2;
   const size =

@@ -91,20 +91,26 @@ export default function App() {
         const flat = await layoutFlatPolygons(spec);
         if (cancelled) return;
         // 盖印效果：版式输出的是**可读**轮廓，所以 mirror=false（翻一次就印反了）
-        try {
-          setPreviewUrl(
-            renderPreviewToDataURL(flat, {
-              sizeMm: spec.body.sizeMm,
-              dpi: 180,
-              mirror: false,
-              paddingMm: 1.5,
-              paper: { enabled: true },
-              ink: {},
-            }),
-          );
-        } catch {
-          setPreviewUrl('');
-        }
+        const paintInk = (rings: typeof flat) => {
+          try {
+            setPreviewUrl(
+              renderPreviewToDataURL(rings, {
+                sizeMm: spec.body.sizeMm,
+                dpi: 180,
+                mirror: false,
+                paddingMm: 1.5,
+                paper: { enabled: true },
+                ink: {},
+                // 阴刻是「图案留白、其余上墨」，不传 faceRing 会把盖印效果整个画反
+                engraved: spec.relief.mode === 'engraved',
+                faceRing: faceRingOf(spec),
+              }),
+            );
+          } catch {
+            setPreviewUrl('');
+          }
+        };
+        paintInk(flat);
         const polygons = fromLayoutPolygons(flat);
         const images: Record<string, ImagePayload> = {};
         for (const l of spec.layers) {
@@ -142,20 +148,7 @@ export default function App() {
           setElapsed(performance.now() - t0);
           // 图像描摹结果只有 worker 有，盖印效果要在建模回来后补画一遍
           if (res.previewRings && res.previewRings.length > 0) {
-            try {
-              setPreviewUrl(
-                renderPreviewToDataURL(res.previewRings, {
-                  sizeMm: spec.body.sizeMm,
-                  dpi: 180,
-                  mirror: false,
-                  paddingMm: 1.5,
-                  paper: { enabled: true },
-                  ink: {},
-                }),
-              );
-            } catch {
-              /* 预览失败不影响建模 */
-            }
+            paintInk(res.previewRings);
           }
         } else {
           setMesh(null);
@@ -694,4 +687,36 @@ function specFromHash(): SealSpec | null {
   } catch {
     return null;
   }
+}
+
+/** 章面轮廓环（阴刻盖印预览要拿它铺满墨底）；圆角忽略，误差在 0.1mm 内肉眼不可见 */
+function faceRingOf(spec: SealSpec): { points: Array<{ x: number; y: number }> } {
+  const half = spec.body.sizeMm / 2;
+  const b = spec.body;
+  if (b.shape === 'circle') {
+    const n = 96;
+    return {
+      points: Array.from({ length: n }, (_, i) => {
+        const a = (i / n) * Math.PI * 2;
+        return { x: Math.cos(a) * half, y: Math.sin(a) * half };
+      }),
+    };
+  }
+  if (b.shape === 'polygon') {
+    const n = Math.max(3, Math.min(12, Math.round(b.sides)));
+    return {
+      points: Array.from({ length: n }, (_, i) => {
+        const a = (i / n) * Math.PI * 2 + Math.PI / 2;
+        return { x: Math.cos(a) * half, y: Math.sin(a) * half };
+      }),
+    };
+  }
+  return {
+    points: [
+      { x: -half, y: -half },
+      { x: half, y: -half },
+      { x: half, y: half },
+      { x: -half, y: half },
+    ],
+  };
 }
