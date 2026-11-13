@@ -23,6 +23,7 @@ import { checkMissing } from './layout/missing.ts';
 import { renderPreviewToDataURL } from './render/preview2d.ts';
 import About from './ui/About.tsx';
 import ElementList from './ui/ElementList.tsx';
+import CanvasEditor from './ui/CanvasEditor.tsx';
 import { BODY_THUMBS } from './ui/body-thumbs.ts';
 import { ORNAMENT_THUMBS } from './ui/ornament-thumbs.ts';
 import { PRESETS } from './core/presets.ts';
@@ -49,6 +50,8 @@ export default function App() {
   const [fits, setFits] = useState<LayerFit[]>([]);
   /** 元素清单里选中的层；为空时退回第一层 */
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  /** 每个文字层的可读轮廓（叠在预览图上做拖拽与框选） */
+  const [layerRings, setLayerRings] = useState<Record<string, { points: { x: number; y: number }[] }[]>>({});
   /** 图像图层 id → 像素；不进 state，避免每次拖参数都深拷贝几 MB */
   const imagesRef = useRef<Map<string, ImageData>>(new Map());
   const [imageVersion, setImageVersion] = useState(0);
@@ -153,6 +156,12 @@ export default function App() {
         }
         const polygonsByLayer: Record<string, ReturnType<typeof fromLayoutPolygons>> = {};
         for (const [layerId, rings] of byLayer) polygonsByLayer[layerId] = fromLayoutPolygons(rings);
+        // 画布编辑用：每层的可读轮廓（与盖印预览同向，不是镜像后的）
+        const ringsByLayer: Record<string, { points: { x: number; y: number }[] }[]> = {};
+        for (const [layerId, rings] of byLayer) {
+          ringsByLayer[layerId] = rings.map((r) => ({ points: r.points }));
+        }
+        setLayerRings(ringsByLayer);
         const images: Record<string, ImagePayload> = {};
         for (const l of spec.layers) {
           if (l.kind !== 'image') continue;
@@ -238,6 +247,14 @@ export default function App() {
   const libStyleDef = libStyle ? BODY_STYLES.find((s) => s.id === libStyle) : undefined;
   /** 外部主体只按底面缩放，高度随模型比例走 */
   const libHeightMm = libStyleDef ? Math.round(spec.body.sizeMm * libStyleDef.heightRatio * 10) / 10 : null;
+
+  /** 画布线框用的每层轮廓；没有轮廓的层（如图像）仍然占位，只是不画框 */
+  const canvasLayers = spec.layers.map((l) => ({
+    id: l.id,
+    kind: l.kind,
+    rings: layerRings[l.id] ?? [],
+    anchor: l.anchor,
+  }));
 
   const patch = (fn: (s: SealSpec) => void) => {
     setActivePreset(undefined);
@@ -1002,16 +1019,30 @@ export default function App() {
         >
           <div style={{ fontSize: 12, color: '#7a746b', whiteSpace: 'nowrap' }}>盖印效果（字是正的）</div>
           {previewUrl ? (
-            <img
-              src={previewUrl}
-              alt="盖印效果预览"
+            <div
               style={{
+                position: 'relative',
                 width: narrow ? 96 : '100%',
+                flex: '0 0 auto',
                 borderRadius: 6,
                 border: '1px solid #eee7dc',
-                flex: '0 0 auto',
+                overflow: 'hidden',
               }}
-            />
+            >
+              <img src={previewUrl} alt="盖印效果预览" style={{ width: '100%', display: 'block' }} />
+              <CanvasEditor
+                sizeMm={spec.body.sizeMm}
+                paddingMm={1.5}
+                shape={spec.body.shape}
+                sides={spec.body.sides}
+                layers={canvasLayers}
+                selectedId={selectedLayer?.id ?? null}
+                onSelect={setSelectedId}
+                onAnchor={(id, x, y) =>
+                  updateLayer(id, (l) => { l.anchor.x = x; l.anchor.y = y; })
+                }
+              />
+            </div>
           ) : (
             <div style={{ fontSize: 12, color: '#b0a99e' }}>—</div>
           )}
