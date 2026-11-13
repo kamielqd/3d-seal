@@ -44,6 +44,18 @@ export interface TextBlockParams {
   /** 整体缩放 */
   scale?: number;
   toleranceMm?: number;
+  /**
+   * 横排：单行最大宽度（mm）。超过则自动换行，换行后整块按墨迹包围盒重新居中。
+   * 不传（或 <=0）保持单行（向后兼容）。
+   */
+  maxWidthMm?: number;
+  /**
+   * 竖排：单列最大高度（mm）。超过则自动换列（自右向左），整块按包围盒重新居中。
+   * 不传（或 <=0）保持单列（向后兼容）。
+   */
+  maxHeightMm?: number;
+  /** 行高倍数：行/列间距 = fontSizeMm × lineHeight，默认 1.15 */
+  lineHeight?: number;
 }
 
 /** 默认弦高误差 0.05mm：0.4mm 喷嘴下点数/网格已足够；0.02 仅用于「高清导出」，不设为默认。 */
@@ -400,50 +412,189 @@ function glyphRingsForChar(
   return { polys, advanceMm };
 }
 
+/** 默认行高倍数（行距 = 字号 × 该值） */
+export const DEFAULT_LINE_HEIGHT = 1.15;
+
+/** 不允许出现在行首/列首的标点（遇到就把上一个字挪下来） */
+const LINE_START_PUNCT = new Set(Array.from('，。、；：！？'));
+
+function isLineStartPunct(ch: string): boolean {
+  return LINE_START_PUNCT.has(ch);
+}
+
+interface CharInfo {
+  ch: string;
+  polys: Polygon2D[];
+  advanceMm: number;
+}
+
+function buildCharInfos(
+  font: GlyphFont,
+  chars: string[],
+  fontSizeMm: number,
+  tol: number | undefined,
+): CharInfo[] {
+  return chars.map((ch) => {
+    const { polys, advanceMm } = glyphRingsForChar(font, ch, fontSizeMm, tol);
+    return { ch, polys, advanceMm };
+  });
+}
+
+/** 一组字（按前进宽度计）的连线宽：Σadvance + 字距×(n-1) */
+function runAdvanceWidth(infos: CharInfo[], idxs: number[], spacing: number): number {
+  let w = 0;
+  for (let k = 0; k < idxs.length; k++) w += infos[idxs[k]].advanceMm;
+  return w + spacing * Math.max(0, idxs.length - 1);
+}
+
 /**
- * 横排：逐字按前进宽度累加 + 字距，整体包围盒居中后落到 centerMm。
- * 输出满足外环 CCW / 内孔 CW。
+ * 横排：逐字按前进宽度累加 + 字距。
+ *
+ * - 居中：**按墨迹包围盒**把整块平移到 `centerMm`（不再用字宽累加居中——
+ *   汉字左右边距与末字字距会让墨迹重心偏离字宽中点，竖直方向更要按 bbox 居中）。
+ * - 换行：给了 `maxWidthMm` 且单行超宽就贪心换行，行距 = fontSizeMm × lineHeight；
+ *   换行后整块按 bbox 重新居中。行首是标点时把上一行最后一个字挪下来。
+ * - 不传 `maxWidthMm` 时行为等同旧的单行排版（向后兼容）。
  */
 export function textToPolygons(p: TextBlockParams): Polygon2D[] {
   const fontSizeMm = p.fontSizeMm;
   const spacing = p.letterSpacingMm ?? 0;
-  const chars = Array.from(p.text);
-  const out: Polygon2D[] = [];
-  let cursor = 0;
-  const advs: number[] = [];
-  for (const ch of chars) {
-    const { polys, advanceMm } = glyphRingsForChar(p.font, ch, fontSizeMm, p.toleranceMm);
-    advs.push(advanceMm);
-    if (ch.trim() !== '' && polys.length > 0) {
-      out.push(...transformPolygons(polys, { dx: cursor, dy: 0 }));
+  const lineHeight = p.lineHeight ?? DEFAULT_LINE_HEIGHT;
+  const infos = buildCharInfos(p.font, Array.from(p.text), fontSizeMm, p.toleranceMm);
+  if (infos.length === 0) return [];
+  const maxWidth = p.maxWidthMm != null && p.maxWidthMm > 0 ? p.maxWidthMm : Infinity;
+
+  // 1) 贪心分行（按前进宽度；advance 一般 ≥ 墨迹宽，保证墨迹不会超框）
+  const lines: number[][] = [];
+  {
+    let cur: number[] = [];
+    for (let i = 0; i < infos.length; i++) {
+      if (cur.length === 0) {
+        cur.push(i);
+        continue;
+      }
+      const tentative = runAdvanceWidth(infos, [...cur, i], spacing);
+      if (tentative <= maxWidth + 1e-9) {
+        cur.push(i);
+      } else {
+        lines.push(cur);
+        cur = [i];
+      }
     }
-    cursor += advanceMm + spacing;
+    if (cur.length > 0) lines.push(cur);
   }
-  const totalWidth = advs.reduce((a, b) => a + b, 0) + spacing * Math.max(0, chars.length - 1);
-  const shifted = out.map((pg) => ({
-    points: pg.points.map((pt) => ({ x: pt.x - totalWidth / 2, y: pt.y })),
-  }));
-  return finalizeBlock(shifted, p);
+
+  // 2) 行首标点：把上一行最后一个字挪到下一行行首（上一行需 >1 字）
+  for (let li = 1; li < lines.length; li++) {
+    let guard = 0;
+    while (
+      lines[li].length > 0 &&
+      lines[li - 1].length > 1 &&
+      isLineStartPunct(infos[lines[li][0]].ch) &&
+      guard++ < 64
+    ) {
+      const moved = lines[li - 1].pop() as number;
+      lines[li].unshift(moved);
+    }
+  }
+
+  // 3) 逐行摆放：行内按基线对齐（y=0 为基线），行间基线相距 fontSizeMm × lineHeight
+  const lineStep = fontSizeMm * lineHeight;
+  const nLines = lines.length;
+  const out: Polygon2D[] = [];
+  for (let li = 0; li < nLines; li++) {
+    const idxs = lines[li];
+    const baselineY = ((nLines - 1) / 2 - li) * lineStep;
+    const linePolys: Polygon2D[] = [];
+    let cursor = 0;
+    for (const i of idxs) {
+      const inf = infos[i];
+      if (inf.ch.trim() !== '' && inf.polys.length > 0) {
+        linePolys.push(...transformPolygons(inf.polys, { dx: cursor, dy: 0 }));
+      }
+      cursor += inf.advanceMm + spacing;
+    }
+    if (linePolys.length === 0) continue;
+    // 行内按墨迹水平居中，基线落到 baselineY
+    const lb = bounds(linePolys);
+    const shiftX = -((lb.minX + lb.maxX) / 2);
+    for (const pg of linePolys) {
+      out.push({ points: pg.points.map((pt) => ({ x: pt.x + shiftX, y: pt.y + baselineY })) });
+    }
+  }
+
+  return finalizeBlock(out, p);
 }
 
 /**
- * 竖排：单列、自上而下、字身直立（印章竖排惯例），每字按包围盒居中到其格心。
- * 多列从右往左的复杂版面后续再扩展。
+ * 竖排：字身直立、自上而下，每字按包围盒居中到其格心。
+ *
+ * - 居中：整块按墨迹包围盒平移回 `centerMm`。
+ * - 换列：给了 `maxHeightMm` 且单列超高就贪心换列（列自右向左），
+ *   列间距 = fontSizeMm × lineHeight；换列后整块按 bbox 重新居中。
+ *   列首是标点时把上一列最后一个字挪下来。
+ * - 不传 `maxHeightMm` 时行为等同旧的单列排版（向后兼容）。
  */
 export function verticalTextToPolygons(p: TextBlockParams): Polygon2D[] {
   const fontSizeMm = p.fontSizeMm;
   const spacing = p.letterSpacingMm ?? 0;
-  const step = fontSizeMm + spacing;
-  const chars = Array.from(p.text);
-  const n = chars.length;
-  const out: Polygon2D[] = [];
-  for (let i = 0; i < n; i++) {
-    const ch = chars[i];
-    const { polys } = glyphRingsForChar(p.font, ch, fontSizeMm, p.toleranceMm);
-    if (ch.trim() === '' || polys.length === 0) continue;
-    const centered = centerPolygons(polys);
-    const cellY = ((n - 1) / 2 - i) * step;
-    out.push(...transformPolygons(centered, { dx: 0, dy: cellY }));
+  const lineHeight = p.lineHeight ?? DEFAULT_LINE_HEIGHT;
+  const infos = buildCharInfos(p.font, Array.from(p.text), fontSizeMm, p.toleranceMm);
+  if (infos.length === 0) return [];
+  const charStep = fontSizeMm + spacing; // 同列上下相邻字的中心距
+  const maxHeight = p.maxHeightMm != null && p.maxHeightMm > 0 ? p.maxHeightMm : Infinity;
+
+  // 1) 贪心分列：一列高度 ≈ 首末字心跨度 + 一个字高
+  const columns: number[][] = [];
+  {
+    let cur: number[] = [];
+    for (let i = 0; i < infos.length; i++) {
+      if (cur.length === 0) {
+        cur.push(i);
+        continue;
+      }
+      const newCount = cur.length + 1;
+      const h = charStep * (newCount - 1) + fontSizeMm;
+      if (h <= maxHeight + 1e-9) {
+        cur.push(i);
+      } else {
+        columns.push(cur);
+        cur = [i];
+      }
+    }
+    if (cur.length > 0) columns.push(cur);
   }
+
+  // 2) 列首标点：把上一列最后一个字挪到下一列列首（上一列需 >1 字）
+  for (let ci = 1; ci < columns.length; ci++) {
+    let guard = 0;
+    while (
+      columns[ci].length > 0 &&
+      columns[ci - 1].length > 1 &&
+      isLineStartPunct(infos[columns[ci][0]].ch) &&
+      guard++ < 64
+    ) {
+      const moved = columns[ci - 1].pop() as number;
+      columns[ci].unshift(moved);
+    }
+  }
+
+  // 3) 逐列摆放：列自右向左，列内自上而下
+  const colStep = fontSizeMm * lineHeight;
+  const nCols = columns.length;
+  const out: Polygon2D[] = [];
+  for (let ci = 0; ci < nCols; ci++) {
+    const idxs = columns[ci];
+    const colX = ((nCols - 1) / 2 - ci) * colStep; // ci=0 最右（x 最大）
+    const k = idxs.length;
+    for (let a = 0; a < k; a++) {
+      const inf = infos[idxs[a]];
+      if (inf.ch.trim() === '' || inf.polys.length === 0) continue;
+      const centered = centerPolygons(inf.polys);
+      const cellY = ((k - 1) / 2 - a) * charStep;
+      out.push(...transformPolygons(centered, { dx: colX, dy: cellY }));
+    }
+  }
+
   return finalizeBlock(out, p);
 }

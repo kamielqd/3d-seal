@@ -6,6 +6,7 @@ import { ensureFont, resolveFontId } from '../layout/fonts.ts';
 import { textToPolygons, verticalTextToPolygons, type GlyphFont } from '../layout/text.ts';
 import { ringTextPolygons } from '../layout/ring.ts';
 import { huiwenTextPolygons } from '../layout/huiwen.ts';
+import { defaultOrnamentSizeMm, ornamentRings } from '../layout/ornaments.ts';
 import { fromLayoutPolygons } from './polygon-bridge.ts';
 import type { Layer, SealSpec, TextLayer } from './spec.ts';
 import type { Polygon2D as GeomPolygon } from '../geometry/types.ts';
@@ -114,10 +115,19 @@ async function layoutTextWithFit(
       rotateDeg: layer.transform.rotateDeg,
       scale: layer.transform.scale,
     };
+    // 换行上限：按当前字号估一条文字带的高度，先问 fit 箱子要宽度/高度，
+    // 超了就在版式层折行（而不是一路缩到看不清）
+    const band = fontSizeMm * (layer.lineHeight || 1.15);
+    const box = fitBoxMm(spec, band);
+    const lineHeight = layer.lineHeight || 1.15;
 
     switch (layer.layout) {
       case 'vertical':
-        return verticalTextToPolygons(base) as unknown as LayoutPolygon[];
+        return verticalTextToPolygons({
+          ...base,
+          maxHeightMm: box.h,
+          lineHeight,
+        }) as unknown as LayoutPolygon[];
       case 'huiwen':
         return huiwenTextPolygons({
           text: layer.text,
@@ -142,11 +152,21 @@ async function layoutTextWithFit(
           spanDeg: layer.ringSpanDeg,
           centerMm,
         });
-        return res.polygons as unknown as LayoutPolygon[];
+        const rings = res.polygons as unknown as LayoutPolygon[];
+        // 中心图案：纯几何环，当普通图案并进去（阴刻即刻掉）
+        const orn = layer.ringOrnament ?? 'none';
+        if (orn === 'none') return rings;
+        const sizeMm = layer.ringOrnamentSizeMm ?? defaultOrnamentSizeMm(spec.body.sizeMm);
+        const ornRings = ornamentRings(orn, { sizeMm, centerMm });
+        return [...rings, ...ornRings.map((r) => ({ points: r.map((p) => ({ x: p.x, y: p.y })) }))];
       }
       case 'horizontal':
       default:
-        return textToPolygons(base) as unknown as LayoutPolygon[];
+        return textToPolygons({
+          ...base,
+          maxWidthMm: box.w,
+          lineHeight,
+        }) as unknown as LayoutPolygon[];
     }
   };
 

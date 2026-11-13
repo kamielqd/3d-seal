@@ -3,7 +3,9 @@
  *
  * 把每个字按「弧长」摆到半径 radiusMm 的圆上，字心落在同一半径；
  * 每字绕自身中心旋转 (angle - 90°)，使字头指向圆外。
- * 字数变化时自动按实际前进宽度重算角度；若总张角超过给定 span，则等比缩小字号与字距以适配（不重叠、不越界）。
+ * 整段文字以 startDeg 为**中心**对称铺开（占角 = min(span, 需要角)，起点 = startDeg - 占角/2），
+ * 字数少时不会把空隙堆在一侧。字数变化时自动按实际前进宽度重算角度；若总张角超过给定 span，
+ * 则等比缩小字号与字距以适配（不重叠、不越界）。
  */
 
 import type { Vec2, GlyphFont } from './text.ts';
@@ -23,7 +25,7 @@ export interface RingParams {
   letterSpacingMm?: number;
   /** 字心所在圆半径（mm） */
   radiusMm: number;
-  /** 起始角（度，0=+x 方向，逆时针为正，默认 90=正上方） */
+  /** 文字弧的**中心**角度（度，0=+x 方向，逆时针为正，默认 90=正上方）；整段以它为中心对称铺开 */
   startDeg?: number;
   /** 允许占用的总张角（度）。<=0 表示不限制（仅保证不自交，即 <=360°） */
   spanDeg?: number;
@@ -93,12 +95,15 @@ export function ringTextPolygons(p: RingParams): RingResult {
 
   const polygons: Polygon2D[] = [];
   const positions: RingCharPos[] = [];
+  // 以 startDeg 为**中心**对称铺开：占角 sweep，起点 = startDeg - sweep/2。
+  // 这样字数少、span 大时不会把空隙全堆在一侧（旧行为：从 startDeg 起单向铺开）。
+  const startAngleCenter = startRad - sweep / 2;
   let acc = 0; // 沿弧长的累计长度（mm）
   for (let i = 0; i < n; i++) {
     const ch = chars[i];
     const adv = advances[i];
     const centerLinear = acc + adv / 2;
-    const angle = startRad + centerLinear / r;
+    const angle = startAngleCenter + centerLinear / r;
     const rot = angle - Math.PI / 2; // 字头朝外
     const px = center.x + r * Math.cos(angle);
     const py = center.y + r * Math.sin(angle);

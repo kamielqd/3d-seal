@@ -14,10 +14,14 @@ export type BodyShape = 'square' | 'circle' | 'polygon';
  * - 只支持阴刻（阳刻要在面上挖整个凹坑，会切穿底座）
  */
 export type BodyStyleId = 'classic' | 'cylinder' | 'column' | 'dome';
+/** 主体种类：4 个内置模型 + 参数化测试片。styleId 缺省时按旧 spec 处理成 plate。 */
+export type BodyKind = BodyStyleId | 'plate';
 export type BorderStyle = 'none' | 'thin' | 'thick' | 'double';
 export type HandleStyle = 'none' | 'knob' | 'bridge';
 export type ReliefMode = 'raised' | 'engraved';
 export type TextLayout = 'horizontal' | 'vertical' | 'ring' | 'huiwen';
+/** 环形章中心图案（纯几何，来自 layout/ornaments） */
+export type RingOrnament = 'none' | 'star' | 'hexagram';
 export type PrintProcess = 'fdm' | 'resin';
 
 /** 打印取向：face-down = 盖印面贴床；face-up = 背面贴床、字母朝上（必须无手柄）。 */
@@ -45,12 +49,12 @@ export interface BodyConfig {
   handleHeightMm: number;
   handleDiameterMm: number;
   /** 选了外部主体样式就忽略上面的 shape/border/handle，只保留 sizeMm（底面尺寸） */
-  styleId?: BodyStyleId;
+  styleId?: BodyKind;
 }
 
 /** 主体样式清单（UI 用；几何侧按 id 去 public/bodies 取对应 STL）。 */
 export const BODY_STYLES: ReadonlyArray<{
-  id: BodyStyleId;
+  id: BodyKind;
   name: string;
   note: string;
   /**
@@ -63,6 +67,7 @@ export const BODY_STYLES: ReadonlyArray<{
   { id: 'cylinder', name: '圆柱', note: '细高圆柱，握柱子盖', heightRatio: 2.150 },
   { id: 'column', name: '立方柱', note: '细高方柱，握柱子盖', heightRatio: 2.198 },
   { id: 'dome', name: '石墩', note: '圆鼓身 + 双层台座，敦实', heightRatio: 0.965 },
+  { id: 'plate', name: '测试片', note: '3mm 厚平板，可设方形/圆形/正多边形，用来试印或做薄章', heightRatio: 0.1 },
 ];
 
 export interface ReliefConfig {
@@ -100,6 +105,13 @@ export interface TextLayer {
   /** ring 专用 */
   ringStartDeg: number;
   ringSpanDeg: number;
+  /**
+   * 环形章的中心图案。当作普通图案参与布尔（阴刻即刻掉），不是凸起浮雕。
+   * 只在 layout === 'ring' 时生效。
+   */
+  ringOrnament?: RingOrnament;
+  /** 中心图案外接尺寸（mm）；不传按章面直径的 0.28 倍 */
+  ringOrnamentSizeMm?: number;
   anchor: Anchor;
   transform: Transform;
 }
@@ -192,6 +204,7 @@ export function createDefaultSpec(): SealSpec {
       cornerRadiusMm: 2,
       baseThicknessMm: 2.5,
       border: { style: 'thin', widthMm: 1.2, insetMm: 1.2 },
+      styleId: 'classic',
       handle: 'knob',
       handleHeightMm: 16,
       handleDiameterMm: 16,
@@ -213,9 +226,9 @@ export function createTextLayer(init: Partial<TextLayer> = {}): TextLayer {
     fontSizeMm: 7,
     letterSpacingMm: 0.6,
     lineHeight: 1.15,
-    ringStartDeg: -90,
+    ringStartDeg: 90,
     ringSpanDeg: 240,
-    anchor: { x: 0, y: 0.15 },
+    anchor: { x: 0, y: 0 },
     transform: { rotateDeg: 0, scale: 1 },
     ...init,
   };

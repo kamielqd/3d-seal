@@ -7,8 +7,8 @@ import {
   serializeSpec,
   deserializeSpec,
   type BodyShape,
+  type BodyStyleId,
   type ImageLayer,
-  type PrintOrientation,
   type SealSpec,
 } from './core/spec.ts';
 import { layoutFlatWithFit, type LayerFit } from './core/layout-bridge.ts';
@@ -20,6 +20,7 @@ import { checkMissing } from './layout/missing.ts';
 import { renderPreviewToDataURL } from './render/preview2d.ts';
 import About from './ui/About.tsx';
 import { BODY_THUMBS } from './ui/body-thumbs.ts';
+import { ORNAMENT_THUMBS } from './ui/ornament-thumbs.ts';
 import { PRESETS } from './core/presets.ts';
 import type { BuildResponse, ImagePayload } from './worker/geometry.worker.ts';
 import type { SolidMesh } from './geometry/types.ts';
@@ -322,14 +323,6 @@ export default function App() {
 
         <Field label="主体样式">
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-            <button
-              title="方形 / 圆形 / 正多边形，形制可自由调"
-              onClick={() => patch((s) => { delete s.body.styleId; })}
-              style={bodyTileStyle(!libStyle)}
-            >
-              <span style={{ fontSize: 18, lineHeight: '30px', color: libStyle ? '#7a746b' : '#b3261e' }}>◻</span>
-              <span style={{ fontSize: 10 }}>参数化</span>
-            </button>
             {BODY_STYLES.map((st) => (
               <button
                 key={st.id}
@@ -337,23 +330,43 @@ export default function App() {
                 onClick={() =>
                   patch((s) => {
                     s.body.styleId = st.id;
-                    // 外部主体自带平面刻印面朝下，且只支持阴刻
+                    // 4 个内置模型只有圆（常见样式/圆柱/石墩）和方（立方柱）；
+                    // 正多边形只能在测试片上做。选中模型时把章面形状同步成模型真实形状，
+                    // 版式侧和几何侧才用同一套口径。
+                    if (st.id !== 'plate') s.body.shape = st.id === 'column' ? 'square' : 'circle';
+                    if (st.id === 'plate' && s.body.baseThicknessMm > 4) s.body.baseThicknessMm = 3;
                     s.relief.mode = 'engraved';
                     s.print.orientation = 'face-down';
                   })
                 }
                 style={bodyTileStyle(libStyle === st.id)}
               >
-                <span
-                  style={{
-                    display: 'block',
-                    width: 30,
-                    height: 30,
-                    color: libStyle === st.id ? '#b3261e' : '#7a746b',
-                  }}
-                  // SVG 由 temp/gen-thumbs.mjs 生成，内容可控（只有 path）
-                  dangerouslySetInnerHTML={{ __html: BODY_THUMBS[st.id] }}
-                />
+                {st.id === 'plate' ? (
+                  <span
+                    style={{
+                      display: 'block',
+                      width: 30,
+                      height: 30,
+                      lineHeight: '30px',
+                      textAlign: 'center',
+                      fontSize: 18,
+                      color: libStyle === st.id ? '#b3261e' : '#7a746b',
+                    }}
+                  >
+                    ◻
+                  </span>
+                ) : (
+                  <span
+                    style={{
+                      display: 'block',
+                      width: 30,
+                      height: 30,
+                      color: libStyle === st.id ? '#b3261e' : '#7a746b',
+                    }}
+                    // SVG 由 temp/gen-thumbs.mjs 生成，内容只有 path
+                    dangerouslySetInnerHTML={{ __html: BODY_THUMBS[st.id as BodyStyleId] }}
+                  />
+                )}
                 <span style={{ fontSize: 10 }}>{st.name}</span>
               </button>
             ))}
@@ -366,7 +379,7 @@ export default function App() {
               用内置主体：{libStyleDef?.name}
             </div>
             <div style={{ lineHeight: 1.5, opacity: 0.85 }}>
-              形制由模型自带，章型 / 边框 / 手柄不可调；章面尺寸决定整体等比缩放。平面朝下当刻印面，
+              形制由模型自带，章型 / 边框不可调；章面尺寸决定整体等比缩放。平面朝下当刻印面，
               只能阴刻。
             </div>
             {libHeightMm !== null && (
@@ -381,9 +394,9 @@ export default function App() {
         <Field label="章型">
           <select
             value={spec.body.shape}
-            disabled={Boolean(libStyle)}
+            disabled={Boolean(libStyle) && libStyle !== 'plate'}
             onChange={(e) => patch((s) => { s.body.shape = e.target.value as BodyShape; })}
-            style={{ ...inputStyle, opacity: libStyle ? 0.55 : 1 }}
+            style={{ ...inputStyle, opacity: libStyle && libStyle !== 'plate' ? 0.55 : 1 }}
           >
             <option value="square">方形</option>
             <option value="circle">圆形</option>
@@ -415,7 +428,7 @@ export default function App() {
         <Field label="边框">
           <select
             value={spec.body.border.style}
-            disabled={Boolean(libStyle)}
+            disabled={Boolean(libStyle) && libStyle !== 'plate'}
             onChange={(e) =>
               patch((s) => {
                 const style = e.target.value as SealSpec['body']['border']['style'];
@@ -428,7 +441,7 @@ export default function App() {
                     : 1.2;
               })
             }
-            style={{ ...inputStyle, opacity: libStyle ? 0.55 : 1 }}
+            style={{ ...inputStyle, opacity: libStyle && libStyle !== 'plate' ? 0.55 : 1 }}
           >
             <option value="none">无边框</option>
             <option value="thin">单线（细）</option>
@@ -462,7 +475,7 @@ export default function App() {
             onChange={(e) => patch((s) => { s.relief.mode = e.target.value as 'raised' | 'engraved'; })}
             style={inputStyle}
           >
-            <option value="raised" disabled={Boolean(libStyle)}>
+            <option value="raised" disabled={Boolean(libStyle) && libStyle !== 'plate'}>
               阳刻（凸）{libStyle ? ' — 外部主体不支持' : ''}
             </option>
             <option value="engraved">阴刻（凹）</option>
@@ -544,6 +557,44 @@ export default function App() {
             <option value="huiwen">回文（四字）</option>
           </select>
         </Field>
+
+        {textLayer && textLayer.kind === 'text' && textLayer.layout === 'ring' && (
+          <Field label="中心图案">
+            <div style={{ display: 'flex', gap: 6 }}>
+              <button
+                onClick={() =>
+                  patch((s) => {
+                    const l = s.layers.find((x) => x.kind === 'text');
+                    if (l && l.kind === 'text') l.ringOrnament = 'none';
+                  })
+                }
+                style={bodyTileStyle((textLayer.ringOrnament ?? 'none') === 'none')}
+              >
+                <span style={{ fontSize: 16, lineHeight: '30px' }}>○</span>
+                <span style={{ fontSize: 10 }}>无</span>
+              </button>
+              {(['star', 'hexagram'] as const).map((id) => (
+                <button
+                  key={id}
+                  title={id === 'star' ? '五角星' : '六芒星'}
+                  onClick={() =>
+                    patch((s) => {
+                      const l = s.layers.find((x) => x.kind === 'text');
+                      if (l && l.kind === 'text') l.ringOrnament = id;
+                    })
+                  }
+                  style={bodyTileStyle((textLayer.ringOrnament ?? 'none') === id)}
+                >
+                  <span
+                    style={{ display: 'block', width: 24, height: 24, color: (textLayer.ringOrnament ?? 'none') === id ? '#b3261e' : '#7a746b' }}
+                    dangerouslySetInnerHTML={{ __html: ORNAMENT_THUMBS[id] }}
+                  />
+                  <span style={{ fontSize: 10 }}>{id === 'star' ? '五角星' : '六芒星'}</span>
+                </button>
+              ))}
+            </div>
+          </Field>
+        )}
 
         <Field label={`字号 ${textLayer && textLayer.kind === 'text' ? textLayer.fontSizeMm : 7}mm`}>
           <input
@@ -696,41 +747,9 @@ export default function App() {
           </div>
         ))}
 
-        <Field label="手柄">
-          <select
-            value={spec.body.handle}
-            disabled={Boolean(libStyle)}
-            onChange={(e) => patch((s) => { s.body.handle = e.target.value as SealSpec['body']['handle']; })}
-            style={{ ...inputStyle, opacity: libStyle ? 0.55 : 1 }}
-          >
-            <option value="none">无</option>
-            <option value="knob">圆钮</option>
-            <option value="bridge">桥式</option>
-          </select>
-        </Field>
-
-        <Field
-          label={
-            libStyle
-              ? '打印取向（内置主体只能盖印面贴床）'
-              : spec.body.handle === 'none'
-                ? '打印取向'
-                : '打印取向（有手柄时只能盖印面贴床）'
-          }
-        >
-          <select
-            value={spec.print.orientation ?? 'face-down'}
-            disabled={spec.body.handle !== 'none' || Boolean(libStyle)}
-            onChange={(e) => patch((s) => { s.print.orientation = e.target.value as PrintOrientation; })}
-            style={{ ...inputStyle, opacity: spec.body.handle !== 'none' || libStyle ? 0.55 : 1 }}
-          >
-            <option value="face-down">盖印面贴床（face-down）</option>
-            <option value="face-up" disabled={spec.body.handle !== 'none' || Boolean(libStyle)}>
-              背面贴床、字母朝上（face-up）
-            </option>
-          </select>
-        </Field>
-
+        <div style={{ fontSize: 11, color: '#a39c91', marginBottom: 10, lineHeight: 1.5 }}>
+          打印方向固定为盖印面贴热床（face-down），不提供切换。
+        </div>
         <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
           <button style={btnStyle} disabled={!mesh || blocking} onClick={() => download('stl')}>导出 STL</button>
           <button style={btnStyle} disabled={!mesh || blocking} onClick={() => download('3mf')}>导出 3MF</button>
@@ -741,7 +760,7 @@ export default function App() {
         {notice && <p style={{ color: '#2e7d32', fontSize: 12, marginTop: 8, lineHeight: 1.5 }}>{notice}</p>}
         {blocking && (
           <p style={{ color: '#b3261e', fontSize: 12, marginTop: 8, lineHeight: 1.5 }}>
-            有阻断级问题，导出已禁用——先按上面的提示改（切阴刻，或把手柄设为「无」后改成 face-up）。
+            有阻断级问题，导出已禁用——先按上面的提示改（多数情况切回阴刻即可）。
           </p>
         )}
 
