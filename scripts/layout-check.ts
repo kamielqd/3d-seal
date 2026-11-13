@@ -2,11 +2,11 @@
  * 实测 layout 管线的「印章工坊」多边形环数与环方向，并顺带自检环形/回文。
  */
 import fs from 'node:fs';
-import * as opentype from 'opentype.js';
-import { textToPolygons, signedArea, bounds } from '../src/layout/text';
-import { ringTextPolygons, ringSelfCheck } from '../src/layout/ring';
-import { huiwenTextPolygons } from '../src/layout/huiwen';
-import type { Polygon2D } from '../src/layout/text';
+import opentype from 'opentype.js';
+import { textToPolygons, signedArea, bounds } from '../src/layout/text.ts';
+import { ringTextPolygons, ringSelfCheck } from '../src/layout/ring.ts';
+import { huiwenTextPolygons } from '../src/layout/huiwen.ts';
+import type { Polygon2D } from '../src/layout/text.ts';
 
 function loadFont(): opentype.Font {
   const p = 'public/fonts/smiley-sans/smiley-sans-subset.ttf';

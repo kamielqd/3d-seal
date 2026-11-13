@@ -116,6 +116,19 @@ const BRIDGE_GROOVE_LIMIT_MM = 5;
  */
 const WELD_RATIO_LIMIT = 0.05;
 
+/**
+ * 「设计间隙 X → 闭运算已焊到 Y」补语。
+ *
+ * ridge.min 和 gap.min 说的是同一个事实，只差严重度档位，所以必须共用同一条
+ * 文案：否则一个说「设计 0.15 已焊到 0.30」，另一个只说「0.30」，用户会误以为
+ * 后者是设计值。没有 prepare 记录（未做闭运算）或数值没差就返回空串。
+ */
+function gapBeforeNote(prepare: PrepareReport | null | undefined, measuredMm: number): string {
+  const before = prepare?.gapBeforeMm ?? null;
+  if (before === null || before >= measuredMm - 0.02) return '';
+  return `（设计间隙 ${round2(before)}mm，闭运算已焊到 ${round2(measuredMm)}mm）`;
+}
+
 export function checkPrintability(input: PrintabilityInput): Violation[] {
   const out: Violation[] = [];
   const preset = input.print.process === 'resin' ? RESIN : FDM;
@@ -166,11 +179,7 @@ export function checkPrintability(input: PrintabilityInput): Violation[] {
     //   minStroke ≤ gap < minGap   → gap.min  (info)：只是边缘轻微粘连，盖出来略糊
     // 两条都是 info：默认四字 30mm 阴刻按实测永远落在这一档（闭运算把 0.15 焊成 0.30），
     // 任何参数都消不掉，卡 warn 等于让最常见的场景永远挂黄条，用户很快学会无视。
-    const gapBefore = input.prepare?.gapBeforeMm ?? null;
-    const beforeNote =
-      gapBefore !== null && gapBefore < gap.sizeMm - 0.02
-        ? `（设计间隙 ${round2(gapBefore)}mm，闭运算已焊到 ${round2(gap.sizeMm)}mm）`
-        : '';
+    const beforeNote = gapBeforeNote(input.prepare, gap.sizeMm);
     if (gapMeasured && gap.sizeMm < minStrokeMm - EPS) {
       out.push({
         rule: 'ridge.min',
@@ -196,7 +205,7 @@ export function checkPrintability(input: PrintabilityInput): Violation[] {
         severity: 'info',
         measured: round2(gap.sizeMm),
         limit: minGapMm,
-        message: `最窄间隙 ${round2(gap.sizeMm)}mm，窄于参考值 ${minGapMm}mm：两笔边缘可能轻微粘连，盖出来略糊。${advice}`,
+        message: `最窄间隙 ${round2(gap.sizeMm)}mm${beforeNote}，窄于参考值 ${minGapMm}mm：两笔边缘可能轻微粘连，盖出来略糊。${advice}`,
         fix: 'fix:space',
         highlight: { polygons: bboxToHighlight(gap.bbox), bbox: gap.bbox ?? undefined },
       });

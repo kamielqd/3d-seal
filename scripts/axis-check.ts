@@ -1,9 +1,9 @@
 /* 复核 ring 字头朝向 & huiwen 槽位方向（y-up 数据下）。 */
 import fs from 'node:fs';
-import * as otRaw from 'opentype.js';
-import { glyphToPolygons, centerPolygons, transformPolygons } from '../src/layout/text';
-import { ringTextPolygons, ringSelfCheck } from '../src/layout/ring';
-import { huiwenTextPolygons } from '../src/layout/huiwen';
+import otRaw from 'opentype.js';
+import { glyphToPolygons, centerPolygons, transformPolygons } from '../src/layout/text.ts';
+import { ringTextPolygons, ringSelfCheck } from '../src/layout/ring.ts';
+import { huiwenTextPolygons } from '../src/layout/huiwen.ts';
 
 const ot = (otRaw as unknown as { default: typeof otRaw }).default ?? otRaw;
 function loadFont() {

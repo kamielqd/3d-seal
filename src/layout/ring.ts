@@ -6,14 +6,14 @@
  * 字数变化时自动按实际前进宽度重算角度；若总张角超过给定 span，则等比缩小字号与字距以适配（不重叠、不越界）。
  */
 
-import type { Vec2, GlyphFont } from './text';
+import type { Vec2, GlyphFont } from './text.ts';
 import {
   type Polygon2D,
   centerPolygons,
   glyphToPolygons,
   measureAdvanceMm,
   transformPolygons,
-} from './text';
+} from './text.ts';
 
 export interface RingParams {
   text: string;

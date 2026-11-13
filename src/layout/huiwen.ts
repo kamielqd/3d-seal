@@ -8,13 +8,13 @@
  * 注意：最终「盖章为正」由几何管线最后一步 X 轴镜像负责（DESIGN §4.2）；本层只按版式坐标摆放。
  */
 
-import type { Vec2, GlyphFont } from './text';
+import type { Vec2, GlyphFont } from './text.ts';
 import {
   type Polygon2D,
   centerPolygons,
   glyphToPolygons,
   transformPolygons,
-} from './text';
+} from './text.ts';
 
 export interface HuiwenParams {
   text: string;

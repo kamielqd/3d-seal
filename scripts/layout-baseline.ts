@@ -3,16 +3,16 @@
  * 后面几何/布尔接上后，用它比对环数、环方向、面积、包围盒是否漂移。
  */
 import fs from 'node:fs';
-import * as opentype from 'opentype.js';
+import opentype from 'opentype.js';
 import {
   textToPolygons,
   signedArea,
   bounds,
   DEFAULT_TOLERANCE_MM,
   type Polygon2D,
-} from '../src/layout/text';
-import { ringTextPolygons, ringSelfCheck } from '../src/layout/ring';
-import { huiwenTextPolygons } from '../src/layout/huiwen';
+} from '../src/layout/text.ts';
+import { ringTextPolygons, ringSelfCheck } from '../src/layout/ring.ts';
+import { huiwenTextPolygons } from '../src/layout/huiwen.ts';
 
 function loadFont(): opentype.Font {
   const p = 'public/fonts/smiley-sans/smiley-sans-subset.ttf';

@@ -12,7 +12,7 @@
 
 import * as opentype from 'opentype.js';
 import type { Glyph } from 'opentype.js';
-import type { GlyphFont } from './text';
+import type { GlyphFont } from './text.ts';
 import shardData from './data/font-shards.json';
 
 /** 一个字体分片（多分片字体的一个文件）。 */

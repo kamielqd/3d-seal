@@ -10,7 +10,7 @@
  */
 
 import type { Glyph } from 'opentype.js';
-import type { Vec2 } from '../core/spec';
+import type { Vec2 } from '../core/spec.ts';
 
 export type { Vec2 };
 

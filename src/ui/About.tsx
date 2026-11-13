@@ -66,8 +66,7 @@ const LIBS = [
   { name: 'manifold-3d', license: 'Apache-2.0', note: '布尔内核（WASM），保证输出封闭流形' },
   { name: 'three.js', license: 'MIT', note: '3D 预览' },
   { name: 'opentype.js', license: 'MIT', note: '字形解析与轮廓提取' },
-  { name: '@jscadui/3mf-export', license: 'MIT', note: '3MF 导出' },
-  { name: 'fflate', license: 'MIT', note: '3MF 压缩' },
+  { name: 'fflate', license: 'MIT', note: '3MF 打包（zip 压缩）' },
   { name: 'React', license: 'MIT', note: '界面' },
 ];
 

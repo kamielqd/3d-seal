@@ -154,6 +154,62 @@ const preparedGap = await prepareSectionWithReport(bars, { minStrokeMm: 0.4, min
 check(preparedGap.report.weldedGapAreaMm2 > 0, 'prepareSection 闭运算焊掉窄缝', `${preparedGap.report.weldedGapAreaMm2.toFixed(2)}mm²`);
 preparedGap.section.delete();
 
+/* ---------- 4c. ridge.min / gap.min 共用同一个「设计→已焊到」补语 ---------- */
+// 文案路径单元测试：拿原始 0.25mm 截面 + 一条「闭运算前是 0.15mm」的记录，
+// 两档都要拼出同一条补语。（端到端那条由 lab print-check 的真字形用例覆盖。）
+const noteSection = await sectionFromPolygons(bars);
+const noteReport = {
+  minStrokeWidthMm: null,
+  minGapWidthMm: 0.25,
+  thickenedMm: 0,
+  weldedGapAreaMm2: 0.69,
+  areaBeforeMm2: 52.1,
+  gapBeforeMm: 0.15,
+  simplifyMm: 0.02,
+  notes: [],
+};
+const noteRidge = checkPrintability({
+  section: noteSection,
+  solid: null,
+  body: spec.body,
+  relief: spec.relief,
+  print: spec.print,
+  prepare: noteReport,
+}).find((v) => v.rule === 'ridge.min');
+check(
+  (noteRidge?.message ?? '').includes('设计间隙 0.15mm') && (noteRidge?.message ?? '').includes('已焊到 0.25mm'),
+  'ridge.min 文案带「设计间隙 0.15 → 已焊到 0.25」',
+  noteRidge?.message ?? '无',
+);
+// 把 minStroke 压到 0.2，同一个截面落到 gap.min 那一档，验证它用的是同一条文案
+const noteGap = checkPrintability({
+  section: noteSection,
+  solid: null,
+  body: spec.body,
+  relief: spec.relief,
+  print: { ...spec.print, minStrokeMm: 0.2, minGapMm: 0.6 },
+  prepare: noteReport,
+}).find((v) => v.rule === 'gap.min');
+check(
+  (noteGap?.message ?? '').includes('设计间隙 0.15mm') && (noteGap?.message ?? '').includes('已焊到 0.25mm'),
+  'gap.min 文案带同一条「设计间隙 → 已焊到」补语',
+  noteGap?.message ?? '无',
+);
+// 没有 prepare 记录时必须整句省略，且不许改判据
+const noteNone = checkPrintability({
+  section: noteSection,
+  solid: null,
+  body: spec.body,
+  relief: spec.relief,
+  print: spec.print,
+}).find((v) => v.rule === 'ridge.min');
+check(
+  noteNone !== undefined && !(noteNone.message ?? '').includes('设计间隙'),
+  '没有 prepare 记录时整句省略（判据不变）',
+  noteNone?.message ?? '无',
+);
+noteSection.delete();
+
 /* ---------- 5. 「回」：两层环，孔不能填实 ---------- */
 const huiPolys: Polygon2D[] = [
   { outer: rect(-10, -10, 10, 10), holes: [rect(-6, -6, 6, 6, false)] },

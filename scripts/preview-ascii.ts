@@ -1,9 +1,9 @@
 /* 把光栅结果降采样成 ASCII，便于无图像输入时核对形状/朝向/镂空。 */
 import fs from 'node:fs';
-import * as opentype from 'opentype.js';
-import { textToPolygons } from '../src/layout/text';
-import type { Polygon2D } from '../src/layout/text';
-import { rasterizePreview, type RasterResult } from '../src/render/preview2d';
+import opentype from 'opentype.js';
+import { textToPolygons } from '../src/layout/text.ts';
+import type { Polygon2D } from '../src/layout/text.ts';
+import { rasterizePreview, type RasterResult } from '../src/render/preview2d.ts';
 
 function loadFont(): opentype.Font {
   const buf = fs.readFileSync('public/fonts/smiley-sans/smiley-sans-subset.ttf');

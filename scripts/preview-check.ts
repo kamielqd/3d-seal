@@ -1,10 +1,10 @@
 /* 临时验收脚本：无头渲染盖印预览，输出 PNG（自带极简 PNG 编码器，用 node zlib）。 */
 import fs from 'node:fs';
 import zlib from 'node:zlib';
-import * as opentype from 'opentype.js';
-import { textToPolygons, bounds } from '../src/layout/text';
-import type { Polygon2D } from '../src/layout/text';
-import { rasterizePreview, type RasterResult } from '../src/render/preview2d';
+import opentype from 'opentype.js';
+import { textToPolygons, bounds } from '../src/layout/text.ts';
+import type { Polygon2D } from '../src/layout/text.ts';
+import { rasterizePreview, type RasterResult } from '../src/render/preview2d.ts';
 
 function loadFont(): opentype.Font {
   const p = 'public/fonts/smiley-sans/smiley-sans-subset.ttf';
