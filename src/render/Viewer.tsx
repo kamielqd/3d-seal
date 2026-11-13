@@ -52,7 +52,16 @@ function preset(view: ViewMode, orientation: Orientation): { pos: [number, numbe
   return { pos: [48, 42, 62], target: [0, 0, 8] };
 }
 
-export default function Viewer({ mesh, orientation = 'face-down' }: { mesh: ViewerMesh | null; orientation?: Orientation }) {
+export default function Viewer({
+  mesh,
+  orientation = 'face-down',
+  minHeight = 420,
+}: {
+  mesh: ViewerMesh | null;
+  orientation?: Orientation;
+  /** 窄屏时传小一点，否则 3D 会把整屏吃掉 */
+  minHeight?: number;
+}) {
   const hostRef = useRef<HTMLDivElement>(null);
   const [view, setView] = useState<ViewMode>('iso');
   const stateRef = useRef<{
@@ -179,7 +188,7 @@ export default function Viewer({ mesh, orientation = 'face-down' }: { mesh: View
   const faceLabel = orientation === 'face-up' ? '看章面（朝上）' : '看章面（朝下）';
 
   return (
-    <div style={{ position: 'relative', width: '100%', height: '100%', minHeight: 420 }}>
+    <div style={{ position: 'relative', width: '100%', height: '100%', minHeight }}>
       <div ref={hostRef} style={{ width: '100%', height: '100%' }} />
       <div style={{ position: 'absolute', right: 12, top: 10, display: 'flex', gap: 6 }}>
         {([

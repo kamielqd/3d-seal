@@ -18,6 +18,7 @@ import { listFonts, DEFAULT_FONT_ID } from './layout/fonts';
 import { checkMissing } from './layout/missing';
 import { renderPreviewToDataURL } from './render/preview2d';
 import About from './ui/About';
+import { PRESETS } from './core/presets';
 import type { BuildResponse, ImagePayload } from './worker/geometry.worker';
 import type { SolidMesh } from './geometry/types';
 import type { Violation } from './geometry/printability';
@@ -36,6 +37,17 @@ export default function App() {
   const imagesRef = useRef<Map<string, ImageData>>(new Map());
   const [imageVersion, setImageVersion] = useState(0);
   const [showAbout, setShowAbout] = useState(false);
+  const [narrow, setNarrow] = useState(
+    () => typeof window !== 'undefined' && window.matchMedia('(max-width: 820px)').matches,
+  );
+
+  // 窄屏：侧栏挪到下方，否则 300px 侧栏会把 3D 视图挤没
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 820px)');
+    const onChange = () => setNarrow(mq.matches);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
 
   const workerRef = useRef<Worker | null>(null);
   const workerErrRef = useRef<string>('');
@@ -250,9 +262,36 @@ export default function App() {
   }, [mesh, building, elapsed, stage]);
 
   return (
-    <div style={{ display: 'flex', height: '100vh', fontFamily: 'system-ui, sans-serif', background: '#faf9f7' }}>
-      <aside style={{ width: 300, flex: '0 0 300px', padding: 16, overflowY: 'auto', borderRight: '1px solid #e6e2da' }}>
-        <h1 style={{ fontSize: 17, margin: '0 0 14px' }}>印章工坊</h1>
+    <div style={{ display: 'flex', flexDirection: narrow ? 'column-reverse' : 'row', height: '100vh', fontFamily: 'system-ui, sans-serif', background: '#faf9f7' }}>
+      <aside
+        style={{
+          width: narrow ? '100%' : 300,
+          flex: narrow ? '0 0 46vh' : '0 0 300px',
+          minHeight: 0,
+          boxSizing: 'border-box',
+          padding: 16,
+          overflowY: 'auto',
+          borderRight: narrow ? 'none' : '1px solid #e6e2da',
+          borderTop: narrow ? '1px solid #e6e2da' : 'none',
+        }}
+      >
+        <h1 style={{ fontSize: 17, margin: '0 0 10px' }}>印章工坊</h1>
+
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 6 }}>
+          {PRESETS.map((p) => (
+            <button
+              key={p.id}
+              title={p.note}
+              onClick={() => setSpec(p.build())}
+              style={{ ...miniBtnStyle, padding: '5px 9px', fontSize: 12 }}
+            >
+              {p.name}
+            </button>
+          ))}
+        </div>
+        <div style={{ fontSize: 11, color: '#a39c91', marginBottom: 14, lineHeight: 1.5 }}>
+          预设按 FDM 能直接打配：阴刻 + 盖印面贴床。阳刻只有「平装阳刻」那套不用支撑。
+        </div>
 
         <Field label="章型">
           <select
@@ -566,9 +605,13 @@ export default function App() {
         </div>
       </aside>
 
-      <main style={{ flex: 1, display: 'flex', minWidth: 0 }}>
+      <main style={{ flex: 1, display: 'flex', flexDirection: narrow ? 'column' : 'row', minWidth: 0, minHeight: 0 }}>
         <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
-          <Viewer mesh={mesh} orientation={spec.print.orientation ?? 'face-down'} />
+          <Viewer
+            mesh={mesh}
+            orientation={spec.print.orientation ?? 'face-down'}
+            minHeight={narrow ? 240 : 420}
+          />
           <div style={{ position: 'absolute', left: 12, bottom: 10, fontSize: 12, color: '#7a746b' }}>{status}</div>
           <div style={{ position: 'absolute', left: 12, top: 10, fontSize: 11, color: '#a39c91' }}>
             模型视角（实体已镜像）
@@ -577,28 +620,39 @@ export default function App() {
 
         <div
           style={{
-            flex: '0 0 250px',
-            borderLeft: '1px solid #e6e2da',
+            flex: narrow ? '0 0 auto' : '0 0 250px',
+            minHeight: narrow ? 100 : 0,
+            borderLeft: narrow ? 'none' : '1px solid #e6e2da',
+            borderTop: narrow ? '1px solid #e6e2da' : 'none',
             background: '#fff',
             padding: 12,
+            boxSizing: 'border-box',
             display: 'flex',
-            flexDirection: 'column',
-            gap: 8,
+            flexDirection: narrow ? 'row' : 'column',
+            alignItems: narrow ? 'center' : 'stretch',
+            gap: 10,
           }}
         >
-          <div style={{ fontSize: 12, color: '#7a746b' }}>盖印效果（字是正的）</div>
+          <div style={{ fontSize: 12, color: '#7a746b', whiteSpace: 'nowrap' }}>盖印效果（字是正的）</div>
           {previewUrl ? (
             <img
               src={previewUrl}
               alt="盖印效果预览"
-              style={{ width: '100%', borderRadius: 6, border: '1px solid #eee7dc' }}
+              style={{
+                width: narrow ? 96 : '100%',
+                borderRadius: 6,
+                border: '1px solid #eee7dc',
+                flex: '0 0 auto',
+              }}
             />
           ) : (
             <div style={{ fontSize: 12, color: '#b0a99e' }}>—</div>
           )}
-          <div style={{ fontSize: 11, color: '#b0a99e', lineHeight: 1.5 }}>
-            模型整体是镜像的，扣下去才印得正。这两个视角看起来相反是正常的。
-          </div>
+          {!narrow && (
+            <div style={{ fontSize: 11, color: '#b0a99e', lineHeight: 1.5 }}>
+              模型整体是镜像的，扣下去才印得正。这两个视角看起来相反是正常的。
+            </div>
+          )}
         </div>
       </main>
       {showAbout && <About onClose={() => setShowAbout(false)} />}
