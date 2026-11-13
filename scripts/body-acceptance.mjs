@@ -144,6 +144,23 @@ const HOOK = `
     for (const e of divs) { const t=(e.textContent||'').trim(); if (e.children.length===0 && /三角面/.test(t)) return t; }
     return '';
   };
+  window.__fitInfo = function () {
+    const fs=[...document.querySelectorAll('input[type=range]')].find(i=>i.min==='3'&&i.max==='14');
+    const requested = fs ? Number(fs.value) : null;
+    let effective = requested;
+    let fitted = false;
+    const key = '已按章面缩到';
+    const els=[...document.querySelectorAll('div')];
+    for (const e of els) {
+      const t = e.textContent || '';
+      const i = t.indexOf(key);
+      if (i >= 0) {
+        const v = parseFloat(t.slice(i + key.length));
+        if (!isNaN(v)) { effective = v; fitted = requested != null && v !== requested; break; }
+      }
+    }
+    return { requested, effective, fitted };
+  };
 })();
 `;
 
@@ -181,6 +198,23 @@ const clickStyleExpr = (idx) => `(() => {
   if(btns.length<4) return 'only '+btns.length+' svg buttons';
   btns[${idx}].click();
   return btns.length;
+})()`;
+
+const setAutoFitExpr = (on) => `(() => {
+  const cb=[...document.querySelectorAll('input[type=checkbox]')].find(c=>{const lab=c.closest('label'); return lab && /自动适应章面/.test(lab.textContent||'');});
+  if(!cb) return 'no-autofit-checkbox';
+  if(cb.checked!==${on}) cb.click();
+  return cb.checked;
+})()`;
+
+const setFontSizeExpr = (mm) => `(() => {
+  const el=[...document.querySelectorAll('input[type=range]')].find(i=>i.min==='3'&&i.max==='14');
+  if(!el) return 'no-fontsize';
+  const s=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;
+  s.call(el, ${JSON.stringify(String(mm))});
+  el.dispatchEvent(new Event('input',{bubbles:true}));
+  el.dispatchEvent(new Event('change',{bubbles:true}));
+  return el.value;
 })()`;
 
 /* ---------- 主流程 ---------- */
@@ -225,15 +259,23 @@ async function main() {
   for (const st of STYLES) {
     for (const tx of TEXTS) {
       const prev = (await evalExpr('window.__buildCount||0')) || 0;
-      // UI 操作：先设字体/尺寸，再点主体样式，最后改文字
+      // UI 操作：确保 autoFit 开、字号 7；再点主体样式，最后改文字
+      await evalExpr(setAutoFitExpr(true));
+      await evalExpr(setFontSizeExpr(7));
       await evalExpr(setFontExpr('smiley-sans'));
       await evalExpr(setSizeExpr(SIZE_MM));
       await evalExpr(clickStyleExpr(st.idx));
       await evalExpr(setTextExpr(tx.text));
       await waitSettled(prev);
 
-      const m = await evalExpr('window.__metrics()');
+      let m = await evalExpr('window.__metrics()');
+      for (let attempt = 0; attempt < 5; attempt++) {
+        if (m && m.ok && Math.abs(m.height - st.expHeight) <= 0.8) break;
+        await sleep(500);
+        m = await evalExpr('window.__metrics()');
+      }
       const statusText = await evalExpr('window.__statusText()');
+      const fitInfo = await evalExpr('window.__fitInfo()');
       let ms = null, triUI = null, statusUI = null;
       const mt = /(\d+)\s*三角面\s*·\s*([^·]+?)\s*·\s*(\d+)\s*ms/.exec(statusText || '');
       if (mt) { triUI = Number(mt[1]); statusUI = mt[2].trim(); ms = Number(mt[3]); }
@@ -250,6 +292,10 @@ async function main() {
       const viol = (m && m.violations) || [];
       const violStr = viol.length ? viol.map((v) => `${v.rule}(${v.severity})`).join('; ') : '-';
       const blocking = viol.some((v) => v.severity === 'error');
+
+      const req = fitInfo && fitInfo.requested != null ? fitInfo.requested : 7;
+      const eff = fitInfo && fitInfo.effective != null ? fitInfo.effective : req;
+      const fontMm = eff !== req ? `${req}→${eff}` : `${req}`;
 
       // 判定
       const pass =
@@ -272,6 +318,7 @@ async function main() {
         engravedVolume: engravedVol != null ? +engravedVol.toFixed(1) : null,
         removedVolume: removed != null ? +removed.toFixed(1) : null,
         status,
+        fontMm,
         violations: violStr,
         blocking,
         ms,
@@ -280,7 +327,7 @@ async function main() {
       rows.push(row);
       console.log(
         `${st.id.padEnd(9)} ${tx.key.padEnd(6)} tri=${String(tri).padStart(5)} foot=${row.footprint} h=${row.height}(exp${st.expHeight}) ` +
-          `母=${row.motherVolume} 刻掉=${row.removedVolume} zMin=${row.zMin} ${status} viol=[${violStr}] blocking=${blocking} ${ms}ms ${pass ? 'PASS' : 'FAIL'}`,
+          `母=${row.motherVolume} 刻掉=${row.removedVolume} zMin=${row.zMin} font=${fontMm} ${status} viol=[${violStr}] blocking=${blocking} ${ms}ms ${pass ? 'PASS' : 'FAIL'}`,
       );
 
       // 每种样式第一组（4字）截一张
@@ -291,9 +338,52 @@ async function main() {
     }
   }
 
+  // 对照：autoFit=off，7 字应重新出现 pattern.bounds(error) + blocking=true
+  for (const st of STYLES) {
+    const prev = (await evalExpr('window.__buildCount||0')) || 0;
+    await evalExpr(setAutoFitExpr(false));
+    await evalExpr(setFontSizeExpr(7));
+    await evalExpr(setFontExpr('smiley-sans'));
+    await evalExpr(setSizeExpr(SIZE_MM));
+    await evalExpr(clickStyleExpr(st.idx));
+    await evalExpr(setTextExpr('吉祥如意万事顺'));
+    await waitSettled(prev);
+    let m = await evalExpr('window.__metrics()');
+    for (let attempt = 0; attempt < 5; attempt++) {
+      if (m && m.ok && Math.abs(m.height - st.expHeight) <= 0.8) break;
+      await sleep(500);
+      m = await evalExpr('window.__metrics()');
+    }
+    const statusText = await evalExpr('window.__statusText()');
+    const fitInfo = await evalExpr('window.__fitInfo()');
+    let ms = null, triUI = null, statusUI = null;
+    const mt = /(\d+)\s*三角面\s*·\s*([^·]+?)\s*·\s*(\d+)\s*ms/.exec(statusText || '');
+    if (mt) { triUI = +mt[1]; statusUI = mt[2].trim(); ms = +mt[3]; }
+    const tri = m && m.ok ? m.triangleCount : triUI;
+    const status = m && m.ok ? m.status : (m && m.ok === false ? `ERR:${m.code || m.stage || m.error || ''}` : (statusUI || 'FAIL'));
+    const footprint = m && m.ok ? m.footprint : null, height = m && m.ok ? m.height : null, zMin = m && m.ok ? m.zMin : null;
+    const engravedVol = m && m.ok ? m.volume : null, motherVol = mother[st.id], removed = engravedVol != null ? motherVol - engravedVol : null;
+    const viol = (m && m.violations) || [];
+    const violStr = viol.length ? viol.map((v) => `${v.rule}(${v.severity})`).join('; ') : '-';
+    const blocking = viol.some((v) => v.severity === 'error');
+    const req = fitInfo && fitInfo.requested != null ? fitInfo.requested : 7;
+    const eff = fitInfo && fitInfo.effective != null ? fitInfo.effective : req;
+    const fontMm = eff !== req ? `${req}→${eff}` : `${req}`;
+    const pass = status === 'NoError' && tri != null && tri < 20000 && footprint != null && Math.abs(footprint - SIZE_MM) <= 0.2 && height != null && Math.abs(height - st.expHeight) <= 0.5 && removed != null && removed > 0 && zMin != null && Math.abs(zMin) <= 1e-3;
+    const row = { style: st.id, text: '吉祥如意万事顺(7)', note: 'autoFit=off', triangleCount: tri, footprint: footprint != null ? +footprint.toFixed(2) : null, height: height != null ? +height.toFixed(2) : null, expHeight: st.expHeight, zMin: zMin != null ? +zMin.toFixed(3) : null, motherVolume: +motherVol.toFixed(1), engravedVolume: engravedVol != null ? +engravedVol.toFixed(1) : null, removedVolume: removed != null ? +removed.toFixed(1) : null, status, fontMm, violations: violStr, blocking, ms, pass };
+    rows.push(row);
+    console.log(`${st.id.padEnd(9)} 7字/off  tri=${String(tri).padStart(5)} foot=${row.footprint} h=${row.height}(exp${st.expHeight}) font=${fontMm} ${status} viol=[${violStr}] blocking=${blocking} ${ms}ms ${pass ? 'PASS' : 'FAIL'}`);
+  }
+  await evalExpr(setAutoFitExpr(true)); // 复原
+
   writeFileSync('temp/body-acceptance.json', JSON.stringify({ generatedAt: new Date().toISOString(), sizeMm: SIZE_MM, rows }, null, 2));
-  const passCount = rows.filter((r) => r.pass).length;
-  console.log(`\n通过 ${passCount}/${rows.length}`);
+  const mainRows = rows.filter((r) => !r.note);
+  const passCount = mainRows.filter((r) => r.pass).length;
+  const blockingCount = mainRows.filter((r) => r.blocking).length;
+  const contrast = rows.filter((r) => r.note);
+  const contrastBlocking = contrast.filter((r) => r.blocking).length;
+  console.log(`\n主表 12 组：几何通过 ${passCount}/${mainRows.length}；blocking=${blockingCount}`);
+  console.log(`对照(autoFit=off,7字) ${contrast.length} 组：blocking=${contrastBlocking}/${contrast.length}（应为全部 true）`);
   cdp.close();
 }
 
