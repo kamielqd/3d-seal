@@ -15,7 +15,8 @@
     "check:e2e": "node --experimental-strip-types scripts/e2e-m1-check.ts",
     "check:layout": "node --experimental-strip-types scripts/layout-check.ts",
     "build:lab": "vite build --config vite.lab.config.ts",
-    "preview:lab": "vite preview --config vite.lab.config.ts --port 4174"
+    "preview:lab": "vite preview --config vite.lab.config.ts --port 4174",
+    "deploy": "node scripts/deploy-pages.mjs"
   },
   "dependencies": {
     "fflate": "^0.8.3",

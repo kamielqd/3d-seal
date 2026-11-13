@@ -4,7 +4,7 @@
 
 没有后端，不上传任何东西——字体、图片、几何计算全在本机浏览器里完成。
 
-线上地址：部署到 GitHub Pages 后填这里（见下文「部署」）。
+线上地址：**https://kamielqd.github.io/3d-seal/**
 
 ## 能做什么
 
@@ -49,11 +49,18 @@ npm run preview      # 本地起 dist，验证产物
 
 `vite.config.ts` 里 `base: './'`，产物可以放在任意子路径下，不需要按仓库名改配置。
 
-**GitHub Pages**（已配好 `.github/workflows/deploy.yml`）：
+### 发布（gh-pages 分支方式）
 
-1. 推到 GitHub，默认分支 **`main`**（workflow 只在这个分支触发）
-2. 仓库 Settings → Pages → Source 选 **GitHub Actions**
-3. 之后每次 push 到 `main` 会自动跑 `npm ci` → `typecheck` → `build` → 部署
+线上是 **https://kamielqd.github.io/3d-seal/**，Pages 源设为 `gh-pages` 分支根目录。
+
+```bash
+npm run build
+npm run deploy      # 组装 dist → 提交到 gh-pages → 推送
+```
+
+`npm run deploy` 会在临时 worktree 里把 `dist/` 组装成一个孤儿提交推到 `gh-pages`，然后删掉 worktree——`main` 始终干净，不混入构建产物。可见变化才提交，产物没变会直接跳过。它自动找 `git`（PATH 上没有就用 `GIT_EXE` 或常见安装路径），有 `DSH_SECRET_GITHUB_TOKEN` / `GITHUB_TOKEN` 时用令牌推送且不写进 `.git/config`。
+
+**为什么不用 GitHub Actions**：推或改 `.github/workflows/*` 需要令牌带 `workflow` 权限，否则 GitHub 直接拒收（`refusing to allow an OAuth App to create or update workflow`）。想改回自动部署：给一个带 `repo` + `workflow` 权限的令牌，把 Actions 工作流加进 `.github/workflows/`，再把 Pages 的 Source 从「Deploy from a branch」改成「GitHub Actions」。
 
 ## 验收脚本
 
