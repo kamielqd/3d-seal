@@ -28,6 +28,7 @@
  */
 
 import type { BodyConfig, PrintConfig, ReliefConfig } from '../core/spec.ts';
+import type { LayerFit } from '../core/layout-bridge.ts';
 import { isBodyStyleId, loadBody } from './body-library.ts';
 import type { BodyStyleId } from './body-library.ts';
 import { fromCrossSection, getManifold, prepareSectionWithReport } from './crosssection.ts';
@@ -49,6 +50,11 @@ export interface SealBuildSpec {
   print?: PrintConfig;
   /** 不填按 face-down。face-up 只在 handle === 'none' 时允许。 */
   orientation?: SealOrientation;
+  /**
+   * 文字图层自动适应章面的结果（`layoutFlatWithFit()` 的 `fits[0]`）。
+   * 用来让校验文案区分「用户把字号设小了」和「系统替他缩了」——后者不能建议放大字号。
+   */
+  autoFit?: LayerFit | null;
   /**
    * 可选：按图层拆开的多边形。传入才会做「同深度重叠」检测；
    * 几何本身只吃合并后的 polygons，不依赖它。
@@ -420,6 +426,7 @@ async function finishSeal(args: {
       relief,
       print: spec.print ?? { process: 'fdm', minStrokeMm: 0.4, minGapMm: 0.4 },
       prepare: args.prepareReport,
+      autoFit: spec.autoFit ?? null,
     });
   } catch (error) {
     mesh.violations = [{

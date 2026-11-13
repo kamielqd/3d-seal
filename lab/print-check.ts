@@ -13,7 +13,7 @@
 
 import { createDefaultSpec, createTextLayer } from '../src/core/spec.ts';
 import type { SealSpec } from '../src/core/spec.ts';
-import { layoutToGeometryPolygons } from '../src/core/layout-bridge.ts';
+import { layoutFlatWithFit, layoutToGeometryPolygons } from '../src/core/layout-bridge.ts';
 import { bodySection, borderSection, buildSeal } from '../src/geometry/pipeline.ts';
 import { getManifold, prepareSectionWithReport, sectionFromPolygons } from '../src/geometry/crosssection.ts';
 import { measureMinGapRaster, measureMinStrokeRaster } from '../src/geometry/raster.ts';
@@ -52,6 +52,8 @@ const CASES: Case[] = [
   // 焊接比例的另一端：章面挤、字号小，字形必然糊在一起
   { id: 'six-25-engraved', label: '六字 / 25mm / 阴刻 / 字号3.5', spec: makeSpec('印章工坊印鉴', 25, 'engraved', 3.5) },
   { id: 'four-20-engraved', label: '四字 / 20mm / 阴刻 / 字号4.5', spec: makeSpec(TEXT, 20, 'engraved', 4.5) },
+  // 文字自动适应章面：7 字 7mm 会被等比缩到 ~4.2mm，规则文案必须承认「是系统缩的」
+  { id: 'seven-30-autofit', label: '七字 / 30mm / 阴刻 / 字号7（自动适应）', spec: makeSpec('印章工坊印鉴', 30, 'engraved', 7) },
 ];
 
 interface CaseResult {
@@ -73,6 +75,10 @@ interface CaseResult {
   mergedGap: { sizeMm: number; atLimit: boolean; bbox: [number, number, number, number] | null };
   /** 闭运算焊接：焊掉面积 / 闭运算前面积。 */
   weld: { weldedMm2: number; areaBeforeMm2: number; ratioPercent: number; gapBeforeMm: number | null };
+  /** prepareSection 的整体外扩量（笔画不足时会被自动加粗）。 */
+  thickenedMm: number;
+  /** 文字自动适应章面的结果。 */
+  fit: { requestedFontMm: number; effectiveFontMm: number; fitted: boolean } | null;
 }
 
 async function diagnose(spec: SealSpec, polygons: Awaited<ReturnType<typeof layoutToGeometryPolygons>>) {
@@ -104,6 +110,8 @@ async function diagnose(spec: SealSpec, polygons: Awaited<ReturnType<typeof layo
     patternGap: { sizeMm: gap.sizeMm, atLimit: gap.atLimit, bbox: gap.bbox },
     patternStroke: { sizeMm: stroke.sizeMm, atLimit: stroke.atLimit },
     mergedGap,
+    thickenedMm: prepared.report.thickenedMm,
+    fit: null,
     weld: {
       weldedMm2: prepared.report.weldedGapAreaMm2,
       areaBeforeMm2: prepared.report.areaBeforeMm2,
@@ -121,8 +129,10 @@ async function run(): Promise<void> {
 
   for (const testCase of CASES) {
     const started = performance.now();
+    const { fits } = await layoutFlatWithFit(testCase.spec);
+    const autoFit = fits[0] ?? null;
     const polygons = await layoutToGeometryPolygons(testCase.spec);
-    const mesh = await buildSeal(testCase.spec, polygons);
+    const mesh = await buildSeal({ ...testCase.spec, autoFit }, polygons);
     const ms = performance.now() - started;
 
     const violations = (mesh.violations ?? []).map((v) => ({
@@ -145,10 +155,21 @@ async function run(): Promise<void> {
       infos: violations.filter((v) => v.severity === 'info').length,
       errors: violations.filter((v) => v.severity === 'error').length,
       ...(await diagnose(testCase.spec, polygons)),
+      fit:
+        autoFit === null
+          ? null
+          : {
+              requestedFontMm: autoFit.requestedFontMm,
+              effectiveFontMm: autoFit.effectiveFontMm,
+              fitted: autoFit.fitted,
+            },
     };
     results.push(result);
 
     log(`${testCase.label}  ${result.triangles} 面 ${result.status} ${result.ms}ms  块=${result.polygons}`);
+    if (result.fit !== null) {
+      log(`   字号 ${result.fit.requestedFontMm}mm → ${result.fit.effectiveFontMm.toFixed(2)}mm（fitted=${result.fit.fitted}）`);
+    }
     log(
       `   原始字形缝 ${result.rawGap.sizeMm.toFixed(3)}${result.rawGap.atLimit ? '(≥上限)' : ''}  ` +
         `笔画 ${result.patternStroke.sizeMm.toFixed(3)}${result.patternStroke.atLimit ? '(≥上限)' : ''}  ` +
@@ -247,6 +268,37 @@ async function run(): Promise<void> {
       name: '四字30阳刻：不出 groove.aspect（槽规则只管阴刻）',
       ok: !has('four-30-raised', 'groove.aspect'),
       detail: (at('four-30-raised')?.violations ?? []).map((v) => v.rule).join(',') || '无',
+    },
+    {
+      name: '七字：自动适应把字号明显缩小（fitted=true 且明显小于设定值）',
+      ok: (() => {
+        const fit = at('seven-30-autofit')?.fit;
+        return fit !== null && fit !== undefined && fit.fitted && fit.effectiveFontMm < fit.requestedFontMm - 0.5;
+      })(),
+      detail: `字号 ${at('seven-30-autofit')?.fit?.requestedFontMm}mm → ${at('seven-30-autofit')?.fit?.effectiveFontMm.toFixed(2)}mm`,
+    },
+    {
+      name: '七字：缩字号后至少有规则开口（判据没哑）',
+      ok: (at('seven-30-autofit')?.violations ?? []).some((v) => v.rule === 'weld.ratio' || v.rule === 'groove.aspect' || v.rule === 'ridge.min'),
+      detail: (at('seven-30-autofit')?.violations ?? []).map((v) => `${v.severity}:${v.rule}`).join(',') || '无',
+    },
+    {
+      name: '七字：文案说明「是系统缩的」，且不再建议放大字号',
+      ok: (() => {
+        const list = at('seven-30-autofit')?.violations ?? [];
+        const withAdvice = list.filter((v) => v.rule === 'ridge.min' || v.rule === 'gap.min' || v.rule === 'weld.ratio');
+        return (
+          withAdvice.length > 0 &&
+          withAdvice.every((v) => !v.message.includes('放大字号')) &&
+          withAdvice.every((v) => v.message.includes('已自动把字号'))
+        );
+      })(),
+      detail: (at('seven-30-autofit')?.violations ?? []).find((v) => v.rule === 'weld.ratio')?.message ?? '无 weld.ratio',
+    },
+    {
+      name: '四字（没缩过）：文案里不出现「已自动把字号」',
+      ok: (four30?.violations ?? []).every((v) => !v.message.includes('已自动把字号')),
+      detail: ridge?.message.slice(0, 40) ?? '无',
     },
   ];
 

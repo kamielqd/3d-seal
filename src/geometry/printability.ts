@@ -12,6 +12,7 @@
  */
 
 import type { BodyConfig, PrintConfig, PrintProcess, ReliefConfig } from '../core/spec.ts';
+import type { LayerFit } from '../core/layout-bridge.ts';
 import type { PrepareReport } from './crosssection.ts';
 import type { CS } from './morphology.ts';
 import { sectionFromPolygons } from './crosssection.ts';
@@ -67,6 +68,11 @@ export interface PrintabilityInput {
   print: PrintConfig;
   /** prepareSection 的加工记录，用于解释「已自动合并/加粗」。 */
   prepare?: PrepareReport | null;
+  /**
+   * 文字图层自动适应章面的结果（`layoutFlatWithFit()` 给的那条）。
+   * 有 `fitted: true` 时说明系统已经替用户缩过字号，文案不能再建议「放大字号」。
+   */
+  autoFit?: LayerFit | null;
 }
 
 interface Preset {
@@ -115,6 +121,23 @@ const BRIDGE_GROOVE_LIMIT_MM = 5;
  * 取 5%：高于所有「还能看」的场景（最高 1.74%），低于已经糊成一团的场景（10%+）。
  */
 const WELD_RATIO_LIMIT = 0.05;
+
+/**
+ * 「已自动把字号从 X 缩到 Y」补语。
+ *
+ * 自动适应章面之后，系统已经替用户缩过字号了。这时候任何「放大字号」的建议都是
+ * 自相矛盾的——用户会以为是自己设小了。fitted 为 true 时必须说清是系统缩的。
+ */
+function fitNote(autoFit: LayerFit | null | undefined): string {
+  if (autoFit === null || autoFit === undefined || autoFit.fitted !== true) return '';
+  return `（已自动把字号从 ${round2(autoFit.requestedFontMm)}mm 缩到 ${round2(autoFit.effectiveFontMm)}mm：字太多塞不下章面，不是你设小了）`;
+}
+
+/** 自动缩过字号后，建议里的「放大字号」要砍掉（上面的 fitNote 已经解释了原因）。 */
+function fitAwareAdvice(autoFit: LayerFit | null | undefined, advice: string): string {
+  if (autoFit === null || autoFit === undefined || autoFit.fitted !== true) return advice;
+  return advice.replace('或放大字号', '');
+}
 
 /**
  * 「设计间隙 X → 闭运算已焊到 Y」补语。
@@ -180,6 +203,8 @@ export function checkPrintability(input: PrintabilityInput): Violation[] {
     // 两条都是 info：默认四字 30mm 阴刻按实测永远落在这一档（闭运算把 0.15 焊成 0.30），
     // 任何参数都消不掉，卡 warn 等于让最常见的场景永远挂黄条，用户很快学会无视。
     const beforeNote = gapBeforeNote(input.prepare, gap.sizeMm);
+    const fit = fitNote(input.autoFit);
+    const spaceAdvice = fitAwareAdvice(input.autoFit, '加大章面、少排几个字或放大字号');
     if (gapMeasured && gap.sizeMm < minStrokeMm - EPS) {
       out.push({
         rule: 'ridge.min',
@@ -187,8 +212,8 @@ export function checkPrintability(input: PrintabilityInput): Violation[] {
         measured: round2(gap.sizeMm),
         limit: minStrokeMm,
         message: engraved
-          ? `料脊 ${round2(gap.sizeMm)}mm 比一条挤出线还细${beforeNote}，两笔会轻微粘连、盖出来略糊：加大章面、少排几个字或放大字号；想彻底分开可换「平装阳刻」预设（阳刻时这条窄缝变成地面上的沟，不受 0.4mm 挤出线限制）。`
-          : `间隙 ${round2(gap.sizeMm)}mm 比一条挤出线（${minStrokeMm}mm）还窄${beforeNote}，两条笔画会轻微粘连：加大章面、少排几个字或放大字号。`,
+          ? `料脊 ${round2(gap.sizeMm)}mm 比一条挤出线还细${beforeNote}${fit}，两笔会轻微粘连、盖出来略糊：${spaceAdvice}；想彻底分开可换「平装阳刻」预设（阳刻时这条窄缝变成地面上的沟，不受 0.4mm 挤出线限制）。`
+          : `间隙 ${round2(gap.sizeMm)}mm 比一条挤出线（${minStrokeMm}mm）还窄${beforeNote}${fit}，两条笔画会轻微粘连：${spaceAdvice}。`,
         fix: 'fix:space',
         highlight: { polygons: bboxToHighlight(gap.bbox), bbox: gap.bbox ?? undefined },
       });
@@ -205,7 +230,7 @@ export function checkPrintability(input: PrintabilityInput): Violation[] {
         severity: 'info',
         measured: round2(gap.sizeMm),
         limit: minGapMm,
-        message: `最窄间隙 ${round2(gap.sizeMm)}mm${beforeNote}，窄于参考值 ${minGapMm}mm：两笔边缘可能轻微粘连，盖出来略糊。${advice}`,
+        message: `最窄间隙 ${round2(gap.sizeMm)}mm${beforeNote}${fit}，窄于参考值 ${minGapMm}mm：两笔边缘可能轻微粘连，盖出来略糊。${advice}`,
         fix: 'fix:space',
         highlight: { polygons: bboxToHighlight(gap.bbox), bbox: gap.bbox ?? undefined },
       });
@@ -290,7 +315,7 @@ export function checkPrintability(input: PrintabilityInput): Violation[] {
         severity: 'warn',
         measured: round2(weldRatio * 100),
         limit: round2(WELD_RATIO_LIMIT * 100),
-        message: `闭运算焊掉了 ${round2(weldRatio * 100)}% 的图案面积（${round2(weldedMm2)}mm² / ${round2(areaBeforeMm2)}mm²）：字太小或章面太挤，笔画已经粘成一片，盖出来会糊。加大章面、少排几个字或放大字号。`,
+        message: `闭运算焊掉了 ${round2(weldRatio * 100)}% 的图案面积（${round2(weldedMm2)}mm² / ${round2(areaBeforeMm2)}mm²）：字太小或章面太挤，笔画已经粘成一片，盖出来会糊。${fitAwareAdvice(input.autoFit, '加大章面、少排几个字或放大字号')}。${fitNote(input.autoFit)}`,
         fix: 'fix:space',
       });
     }
