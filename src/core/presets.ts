@@ -88,11 +88,9 @@ export const PRESETS: Preset[] = [
     note: '32mm 方章、四字回文（右上→右下→左上→左下），藏书印的传统排法',
     build: () => {
       const spec = base();
-      spec.body.shape = 'square';
+      // 用内置主体「常见样式」：圆座 + 颈 + 球钮，形制自带，只需章面尺寸
+      spec.body.styleId = 'classic';
       spec.body.sizeMm = 40;
-      spec.body.cornerRadiusMm = 1;
-      spec.body.border = { style: 'thick', widthMm: 1.6, insetMm: 1.2 };
-      spec.body.handle = 'knob';
       spec.relief.mode = 'engraved';
       spec.relief.depthMm = 1.2;
       const t = spec.layers.find((l) => l.kind === 'text');

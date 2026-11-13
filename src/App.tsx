@@ -27,6 +27,8 @@ import type { Violation } from './geometry/printability.ts';
 
 export default function App() {
   const [spec, setSpec] = useState<SealSpec>(() => specFromHash() ?? createDefaultSpec());
+  /** 当前套用的预设 id；任何手动改动都会清掉，避免「显示是预设、实际已被改过」 */
+  const [activePreset, setActivePreset] = useState<string | undefined>();
   const [mesh, setMesh] = useState<ViewerMesh | null>(null);
   const [error, setError] = useState<string>('');
   const [notice, setNotice] = useState<string>('');
@@ -205,6 +207,7 @@ export default function App() {
   const libHeightMm = libStyleDef ? Math.round(spec.body.sizeMm * libStyleDef.heightRatio * 10) / 10 : null;
 
   const patch = (fn: (s: SealSpec) => void) => {
+    setActivePreset(undefined);
     setSpec((prev) => {
       const next: SealSpec = structuredClone(prev);
       fn(next);
@@ -296,8 +299,18 @@ export default function App() {
             <button
               key={p.id}
               title={p.note}
-              onClick={() => setSpec(p.build())}
-              style={{ ...miniBtnStyle, padding: '5px 9px', fontSize: 12 }}
+              onClick={() => {
+                setSpec(p.build());
+                setActivePreset(p.id);
+              }}
+              style={{
+                ...miniBtnStyle,
+                padding: '5px 9px',
+                fontSize: 12,
+                ...(activePreset === p.id
+                  ? { borderColor: '#b3261e', color: '#b3261e', background: '#fdf3f2' }
+                  : {}),
+              }}
             >
               {p.name}
             </button>
@@ -390,10 +403,13 @@ export default function App() {
 
         <Field label={`章面尺寸 ${spec.body.sizeMm}mm`}>
           <input
-            type="range" min={20} max={45} value={spec.body.sizeMm}
+            type="range" min={20} max={100} step={1} value={spec.body.sizeMm}
             onChange={(e) => patch((s) => { s.body.sizeMm = Number(e.target.value); })}
             style={{ width: '100%' }}
           />
+          <div style={{ fontSize: 10.5, color: '#a39c91', lineHeight: 1.4, marginTop: 2 }}>
+            正方形＝边长，圆形＝直径，正多边形＝外接圆直径
+          </div>
         </Field>
 
         <Field label="边框">

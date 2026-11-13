@@ -41,19 +41,44 @@ function measure(polys: LayoutPolygon[]): { w: number; h: number } {
   return { w: maxX - minX, h: maxY - minY };
 }
 
+/** 章面形状：内置主体里 column 是方章，其余三个（常见样式/圆柱/石墩）都是圆章。 */
+function faceShapeOf(spec: SealSpec): { shape: 'square' | 'circle' | 'polygon'; sides: number } {
+  const id = spec.body.styleId;
+  if (id) return { shape: id === 'column' ? 'square' : 'circle', sides: spec.body.sides };
+  return { shape: spec.body.shape, sides: spec.body.sides };
+}
+
 /**
- * 章面可用尺寸（mm）。留边考虑边框内缩与线宽，圆章/多边形在文字所在高度处的
- * 弦长小于直径，按内切方形保守折算——宁可缩得小一点，也不让笔画探出章面。
+ * 章面可用尺寸（mm）。语义：`sizeMm` 对正方形是**边长**、对圆形是**直径**、
+ * 对正多边形是**外接圆直径**。
+ *
+ * 圆章不能按直径留边：文字占一条高 `bandMm` 的横带，能用的宽度是那条弦
+ * `2√(R²-(band/2)²)`，比直径窄；多边形同理用内切圆。留边 = 边框内缩 + 线宽
+ * + 一条笔画宽的 clearance（实测最外笔画离边框只剩 0.15mm 就是漏了这一条）。
  */
-function fitBoxMm(spec: SealSpec): { w: number; h: number } {
+function fitBoxMm(spec: SealSpec, bandMm: number): { w: number; h: number } {
   const b = spec.body;
-  // 除了边框占位，还要留一条笔画宽的 clearance：只减「边框内缩+线宽」时，
-  // 排满的字会正好贴到边框内沿（实测最外笔画离边框只剩 0.15mm）。
+  const { shape, sides } = faceShapeOf(spec);
   const clearance = Math.max(0.3, spec.print?.minStrokeMm ?? 0.4);
   const margin = Math.max(b.border.insetMm + b.border.widthMm, b.sizeMm * 0.06) + clearance;
-  const usable = Math.max(4, b.sizeMm - margin * 2);
-  const factor = b.shape === 'square' ? 1 : b.shape === 'circle' ? 0.86 : 0.8;
-  return { w: usable * factor, h: usable * factor };
+  const size = b.sizeMm;
+
+  let usableW: number;
+  let usableH: number;
+  if (shape === 'square') {
+    usableW = size - margin * 2;
+    usableH = size - margin * 2;
+  } else if (shape === 'circle') {
+    const R = size / 2;
+    const half = Math.min(R * 0.95, Math.max(bandMm, 1) / 2);
+    usableW = 2 * Math.sqrt(Math.max(0, R * R - half * half)) - margin * 2;
+    usableH = R * 1.7 - margin * 2;
+  } else {
+    const inR = (size / 2) * Math.cos(Math.PI / Math.max(3, sides)); // 内切圆半径
+    usableW = inR * 2 - margin * 2;
+    usableH = inR * 2 - margin * 2;
+  }
+  return { w: Math.max(4, usableW), h: Math.max(4, usableH) };
 }
 
 export interface LayerFit {
@@ -136,9 +161,10 @@ async function layoutTextWithFit(
 
   if (layer.autoFit === false || layer.layout === 'ring') return { polygons: first, fit: makeFit(false, requested) };
 
-  const box = fitBoxMm(spec);
   const m = measure(first);
-  const k = Math.min(1, m.w > 0 ? box.w / m.w : 1, m.h > 0 ? box.h / m.h : 1);
+  // 圆章可用宽度取决于文字横带的高度，所以拿实测高度算弦长，再乘比例
+  const box = fitBoxMm(spec, m.h);
+  const k = Math.min(1, box.w > 0 && m.w > 0 ? box.w / m.w : 1, box.h > 0 && m.h > 0 ? box.h / m.h : 1);
   if (k >= 0.995) return { polygons: first, fit: makeFit(false, requested) };
 
   // 等比缩字号与字距：两者同时乘 k，包围盒也正好缩到 k 倍
