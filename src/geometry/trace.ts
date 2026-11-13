@@ -285,14 +285,14 @@ export async function traceImageData(image: ImageDataLike, options: TraceOptions
   const loops = traceMask(mask, image.width, image.height);
 
   // 像素坐标 → mm，原点移到图像中心。
-  // y 取反后环方向会整体反转（像素系 CCW → mm 系 CW），必须 reverse 回来，
-  // 否则 groupContours 会把所有外环当孔，产出空数组。
+  // 环方向不用管：y 取反会让方向整体反转，但 groupContours 按嵌套深度分组、
+  // 最后统一重写成外环 CCW / 内孔 CW（见 polygon.ts），所以这里既不 reverse 也不 orient。
+  // 曾经加过 `.reverse()`，实测（4 个用例：带孔方块、双岛、圆环、1px 十字）块数/孔数/
+  // 面积/环方向完全一致，只让 RDP 换了起点、点数多 1~2 个，纯属多余。
   const halfW = image.width / 2;
   const halfH = image.height / 2;
   const contours: Vec2[][] = loops.map((loop) =>
-    loop
-      .map(([x, y]) => [(x - halfW) * mmPerPx, (halfH - y) * mmPerPx] as Vec2)
-      .reverse(),
+    loop.map(([x, y]) => [(x - halfW) * mmPerPx, (halfH - y) * mmPerPx] as Vec2),
   );
 
   const simplified = contours
