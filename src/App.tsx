@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import Viewer, { type ViewerMesh } from './render/Viewer';
+import Viewer, { type ViewerMesh } from './render/Viewer.tsx';
 import {
+  BODY_STYLES,
   createDefaultSpec,
   createImageLayer,
   serializeSpec,
@@ -9,19 +10,20 @@ import {
   type ImageLayer,
   type PrintOrientation,
   type SealSpec,
-} from './core/spec';
-import { layoutFlatPolygons } from './core/layout-bridge';
-import { fromLayoutPolygons } from './core/polygon-bridge';
-import { toStlBlob } from './export/stl';
-import { to3mfBlob } from './export/threemf';
-import { listFonts, DEFAULT_FONT_ID } from './layout/fonts';
-import { checkMissing } from './layout/missing';
-import { renderPreviewToDataURL } from './render/preview2d';
-import About from './ui/About';
-import { PRESETS } from './core/presets';
-import type { BuildResponse, ImagePayload } from './worker/geometry.worker';
-import type { SolidMesh } from './geometry/types';
-import type { Violation } from './geometry/printability';
+} from './core/spec.ts';
+import { layoutFlatPolygons } from './core/layout-bridge.ts';
+import { fromLayoutPolygons } from './core/polygon-bridge.ts';
+import { toStlBlob } from './export/stl.ts';
+import { to3mfBlob } from './export/threemf.ts';
+import { listFonts, DEFAULT_FONT_ID } from './layout/fonts.ts';
+import { checkMissing } from './layout/missing.ts';
+import { renderPreviewToDataURL } from './render/preview2d.ts';
+import About from './ui/About.tsx';
+import { BODY_THUMBS } from './ui/body-thumbs.ts';
+import { PRESETS } from './core/presets.ts';
+import type { BuildResponse, ImagePayload } from './worker/geometry.worker.ts';
+import type { SolidMesh } from './geometry/types.ts';
+import type { Violation } from './geometry/printability.ts';
 
 export default function App() {
   const [spec, setSpec] = useState<SealSpec>(() => specFromHash() ?? createDefaultSpec());
@@ -191,6 +193,11 @@ export default function App() {
   /** 阻断级问题：不允许导出（例如阳刻+手柄的 809mm² 悬空面） */
   const blocking = violations.some((v) => v.severity === 'error');
   const imageLayers = spec.layers.filter((l): l is ImageLayer => l.kind === 'image');
+  /** 选了外部主体样式：形制由模型自带，只保留章面尺寸与阴刻 */
+  const libStyle = spec.body.styleId;
+  const libStyleDef = libStyle ? BODY_STYLES.find((s) => s.id === libStyle) : undefined;
+  /** 外部主体只按底面缩放，高度随模型比例走 */
+  const libHeightMm = libStyleDef ? Math.round(spec.body.sizeMm * libStyleDef.heightRatio * 10) / 10 : null;
 
   const patch = (fn: (s: SealSpec) => void) => {
     setSpec((prev) => {
@@ -295,11 +302,70 @@ export default function App() {
           预设按 FDM 能直接打配：阴刻 + 盖印面贴床。阳刻只有「平装阳刻」那套不用支撑。
         </div>
 
+        <Field label="主体样式">
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            <button
+              title="方形 / 圆形 / 正多边形，形制可自由调"
+              onClick={() => patch((s) => { delete s.body.styleId; })}
+              style={bodyTileStyle(!libStyle)}
+            >
+              <span style={{ fontSize: 18, lineHeight: '30px', color: libStyle ? '#7a746b' : '#b3261e' }}>◻</span>
+              <span style={{ fontSize: 10 }}>参数化</span>
+            </button>
+            {BODY_STYLES.map((st) => (
+              <button
+                key={st.id}
+                title={st.note}
+                onClick={() =>
+                  patch((s) => {
+                    s.body.styleId = st.id;
+                    // 外部主体自带平面刻印面朝下，且只支持阴刻
+                    s.relief.mode = 'engraved';
+                    s.print.orientation = 'face-down';
+                  })
+                }
+                style={bodyTileStyle(libStyle === st.id)}
+              >
+                <span
+                  style={{
+                    display: 'block',
+                    width: 30,
+                    height: 30,
+                    color: libStyle === st.id ? '#b3261e' : '#7a746b',
+                  }}
+                  // SVG 由 temp/gen-thumbs.mjs 生成，内容可控（只有 path）
+                  dangerouslySetInnerHTML={{ __html: BODY_THUMBS[st.id] }}
+                />
+                <span style={{ fontSize: 10 }}>{st.name}</span>
+              </button>
+            ))}
+          </div>
+        </Field>
+
+        {libStyle && (
+          <div style={{ ...warnStyle, borderColor: '#e6ded0', background: '#faf7f1' }}>
+            <div style={{ fontWeight: 600, marginBottom: 4 }}>
+              用内置主体：{libStyleDef?.name}
+            </div>
+            <div style={{ lineHeight: 1.5, opacity: 0.85 }}>
+              形制由模型自带，章型 / 边框 / 手柄不可调；章面尺寸决定整体等比缩放。平面朝下当刻印面，
+              只能阴刻。
+            </div>
+            {libHeightMm !== null && (
+              <div style={{ lineHeight: 1.5, marginTop: 2, opacity: 0.85 }}>
+                {spec.body.sizeMm}mm 章面 → 总高约 <strong>{libHeightMm}mm</strong>
+                {libHeightMm > 50 ? '（原模型是瘦高型，想矮一点就调小章面）' : ''}
+              </div>
+            )}
+          </div>
+        )}
+
         <Field label="章型">
           <select
             value={spec.body.shape}
+            disabled={Boolean(libStyle)}
             onChange={(e) => patch((s) => { s.body.shape = e.target.value as BodyShape; })}
-            style={inputStyle}
+            style={{ ...inputStyle, opacity: libStyle ? 0.55 : 1 }}
           >
             <option value="square">方形</option>
             <option value="circle">圆形</option>
@@ -328,6 +394,7 @@ export default function App() {
         <Field label="边框">
           <select
             value={spec.body.border.style}
+            disabled={Boolean(libStyle)}
             onChange={(e) =>
               patch((s) => {
                 const style = e.target.value as SealSpec['body']['border']['style'];
@@ -340,7 +407,7 @@ export default function App() {
                     : 1.2;
               })
             }
-            style={inputStyle}
+            style={{ ...inputStyle, opacity: libStyle ? 0.55 : 1 }}
           >
             <option value="none">无边框</option>
             <option value="thin">单线（细）</option>
@@ -374,7 +441,9 @@ export default function App() {
             onChange={(e) => patch((s) => { s.relief.mode = e.target.value as 'raised' | 'engraved'; })}
             style={inputStyle}
           >
-            <option value="raised">阳刻（凸）</option>
+            <option value="raised" disabled={Boolean(libStyle)}>
+              阳刻（凸）{libStyle ? ' — 外部主体不支持' : ''}
+            </option>
             <option value="engraved">阴刻（凹）</option>
           </select>
         </Field>
@@ -582,8 +651,9 @@ export default function App() {
         <Field label="手柄">
           <select
             value={spec.body.handle}
+            disabled={Boolean(libStyle)}
             onChange={(e) => patch((s) => { s.body.handle = e.target.value as SealSpec['body']['handle']; })}
-            style={inputStyle}
+            style={{ ...inputStyle, opacity: libStyle ? 0.55 : 1 }}
           >
             <option value="none">无</option>
             <option value="knob">圆钮</option>
@@ -593,19 +663,21 @@ export default function App() {
 
         <Field
           label={
-            spec.body.handle === 'none'
-              ? '打印取向'
-              : '打印取向（有手柄时只能盖印面贴床）'
+            libStyle
+              ? '打印取向（内置主体只能盖印面贴床）'
+              : spec.body.handle === 'none'
+                ? '打印取向'
+                : '打印取向（有手柄时只能盖印面贴床）'
           }
         >
           <select
             value={spec.print.orientation ?? 'face-down'}
-            disabled={spec.body.handle !== 'none'}
+            disabled={spec.body.handle !== 'none' || Boolean(libStyle)}
             onChange={(e) => patch((s) => { s.print.orientation = e.target.value as PrintOrientation; })}
-            style={{ ...inputStyle, opacity: spec.body.handle !== 'none' ? 0.55 : 1 }}
+            style={{ ...inputStyle, opacity: spec.body.handle !== 'none' || libStyle ? 0.55 : 1 }}
           >
             <option value="face-down">盖印面贴床（face-down）</option>
-            <option value="face-up" disabled={spec.body.handle !== 'none'}>
+            <option value="face-up" disabled={spec.body.handle !== 'none' || Boolean(libStyle)}>
               背面贴床、字母朝上（face-up）
             </option>
           </select>
@@ -762,6 +834,24 @@ const violationStyle: React.CSSProperties = {
   lineHeight: 1.5,
   marginBottom: 4,
 };
+
+/** 主体样式小方块：选中用朱红描边 + 浅底 */
+const bodyTileStyle = (active: boolean): React.CSSProperties => ({
+  display: 'flex',
+  flexDirection: 'column',
+  alignItems: 'center',
+  justifyContent: 'center',
+  gap: 2,
+  width: 56,
+  height: 56,
+  padding: 2,
+  borderRadius: 8,
+  border: `1px solid ${active ? '#b3261e' : '#e6e2da'}`,
+  background: active ? '#fdf3f2' : '#fff',
+  color: active ? '#b3261e' : '#5f5a52',
+  cursor: 'pointer',
+  lineHeight: 1,
+});
 
 const cardStyle: React.CSSProperties = {
   marginTop: 10,

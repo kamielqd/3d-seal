@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 内置预设模板。
  *
  * 每条预设都按「FDM 能直接打」来配：阴刻 + 盖印面贴床 + 圆钮手柄，
@@ -11,7 +11,7 @@ import {
   type BodyShape,
   type PrintOrientation,
   type SealSpec,
-} from './spec';
+} from './spec.ts';
 
 export interface Preset {
   id: string;

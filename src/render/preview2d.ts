@@ -13,7 +13,7 @@
  *  - 支持 dpi（默认 300）与画布 mm 尺寸。
  */
 
-import type { Polygon2D } from '../layout/text';
+import type { Polygon2D } from '../layout/text.ts';
 
 export interface PaperStyle {
   /** 是否绘制纸张底色（关掉则背景透明），默认 true */

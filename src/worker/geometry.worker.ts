@@ -5,13 +5,13 @@
  * 放在 Worker 里的原因：布尔、描摹、网格化动辄几百毫秒，主线程会被拖成幻灯片。
  * 文字排版仍在主线程（纯数学 <1ms，要跟手）；这里只吃排好的轮廓。
  */
-import { buildSeal, borderPolygons } from '../geometry/pipeline';
-import { getManifold } from '../geometry/crosssection';
-import { combinePolygons, traceLayer } from '../geometry/trace';
-import type { Polygon2D } from '../geometry/types';
-import type { SealBuildSpec } from '../geometry/pipeline';
-import type { Violation } from '../geometry/printability';
-import type { Layer } from '../core/spec';
+import { buildSeal, borderPolygons } from '../geometry/pipeline.ts';
+import { getManifold } from '../geometry/crosssection.ts';
+import { combinePolygons, traceLayer } from '../geometry/trace.ts';
+import type { Polygon2D } from '../geometry/types.ts';
+import type { SealBuildSpec } from '../geometry/pipeline.ts';
+import type { Violation } from '../geometry/printability.ts';
+import type { Layer } from '../core/spec.ts';
 
 /** 位图像素（ImageData 的结构子集，可直接 postMessage 过线） */
 export interface ImagePayload {

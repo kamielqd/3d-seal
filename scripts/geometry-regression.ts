@@ -6,6 +6,8 @@
  *   20×20 方框挖 10×10 孔，保留环方向 + NonZero 后面积必须仍是 300（不是 400）。
  */
 import { createDefaultSpec } from '../src/core/spec.ts';
+import { BODY_STYLES, loadBody, setBodyReader } from '../src/geometry/body-library.ts';
+import type { BodyStyleId } from '../src/geometry/body-library.ts';
 import { borderPolygons, borderSection, bodySection, buildSeal } from '../src/geometry/pipeline.ts';
 import { TraceEmptyError, combinePolygons, traceImageData, traceLayer } from '../src/geometry/trace.ts';
 import type { ImageDataLike } from '../src/geometry/trace.ts';
@@ -21,7 +23,9 @@ import type { ManifoldKit } from '../src/geometry/crosssection.ts';
 import { measureMinStrokeRaster } from '../src/geometry/raster.ts';
 import { repairSelfIntersections } from '../src/geometry/polygon.ts';
 import { checkPrintability } from '../src/geometry/printability.ts';
-import type { Contour, Polygon2D, Vec2 } from '../src/geometry/types.ts';
+import { SealGeometryError } from '../src/geometry/types.ts';
+import type { Contour, Polygon2D, SolidMesh, Vec2 } from '../src/geometry/types.ts';
+import { readFileSync } from 'node:fs';
 
 let failed = 0;
 function check(ok: boolean, label: string, detail = '') {
@@ -441,6 +445,154 @@ baseSec.delete();
 const noBorder = await buildSeal({ ...engravedSpec, body: { ...engravedSpec.body, cornerRadiusMm: 0, border: { style: 'none', widthMm: 1.2, insetMm: 1.2 } } }, [sealRect]);
 const withBorder = await buildSeal({ ...engravedSpec, body: { ...engravedSpec.body, cornerRadiusMm: 0, border: { style: 'thin', widthMm: 1.2, insetMm: 1.2 } } }, [sealRect]);
 check(withBorder.status === 'NoError' && withBorder.triangleCount > noBorder.triangleCount, '边框参与实体：面数增加且 NoError', `${noBorder.triangleCount} → ${withBorder.triangleCount}`);
+/* ---------- 12. 外部主体库：4 个用户模型 ---------- */
+// 浏览器里按 BASE_URL fetch；Node 这里用一个只服务 `/xxx` 的 fetch 顶掉（字体也从 public 读）
+const nativeFetch = globalThis.fetch;
+globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+  const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+  if (url.startsWith('/')) {
+    const bytes = readFileSync(new URL(`../public${url}`, import.meta.url));
+    return new Response(bytes, { status: 200 });
+  }
+  return nativeFetch(input, init);
+}) as typeof fetch;
+
+/**
+ * 近似「印章工坊」四字的图案：4 个 6mm 方框，各带内孔 + 一根竖笔。
+ *
+ * 这里不用真字形是有原因的：`src/core/layout-bridge.ts` 里 `import '../layout/fonts'`
+ * 少了 `.ts` 后缀，Node 的 ESM 解析器直接报 ERR_MODULE_NOT_FOUND（Vite 能容错）。
+ * 那属于核心层，不在本文件的改动范围；真字形的端到端覆盖放在浏览器 lab 里做。
+ * 对「外部主体」这几条断言来说，图案只要有孔、有细笔、面积够刻就行。
+ */
+function textLikePolygons(): Polygon2D[] {
+  const glyphs: Polygon2D[] = [];
+  const boxes = [-10.5, -3.5, 3.5, 10.5];
+  for (const cx of boxes) {
+    glyphs.push({ outer: rect(cx - 2.5, -3, cx + 2.5, 3), holes: [rect(cx - 1.3, -1.3, cx + 1.3, 1.3, false)] });
+    glyphs.push({ outer: rect(cx - 0.35, -2.6, cx + 0.35, 2.6), holes: [] });
+  }
+  return glyphs;
+}
+
+function meshBounds(mesh: SolidMesh) {
+  const { vertProperties, numProp } = mesh;
+  const min = [Infinity, Infinity, Infinity];
+  const max = [-Infinity, -Infinity, -Infinity];
+  for (let i = 0; i < vertProperties.length; i += numProp) {
+    for (let k = 0; k < 3; k++) {
+      const value = vertProperties[i + k]!;
+      if (value < min[k]!) min[k] = value;
+      if (value > max[k]!) max[k] = value;
+    }
+  }
+  return { min, max };
+}
+
+function meshVolume(mesh: SolidMesh): number {
+  const { vertProperties, triVerts, numProp } = mesh;
+  let volume = 0;
+  for (let t = 0; t < triVerts.length; t += 3) {
+    const ia = triVerts[t]! * numProp;
+    const ib = triVerts[t + 1]! * numProp;
+    const ic = triVerts[t + 2]! * numProp;
+    const ax = vertProperties[ia]!, ay = vertProperties[ia + 1]!, az = vertProperties[ia + 2]!;
+    const bx = vertProperties[ib]!, by = vertProperties[ib + 1]!, bz = vertProperties[ib + 2]!;
+    const cx = vertProperties[ic]!, cy = vertProperties[ic + 1]!, cz = vertProperties[ic + 2]!;
+    volume += (ax * (by * cz - bz * cy) - ay * (bx * cz - bz * cx) + az * (bx * cy - by * cx)) / 6;
+  }
+  return volume;
+}
+
+const SIZE_MM = 30;
+const librarySpec = (styleId: BodyStyleId) => ({
+  ...engravedSpecMini,
+  body: { ...baseSpec.body, sizeMm: SIZE_MM, styleId },
+  print: { ...spec.print, process: 'fdm' as const, minStrokeMm: 0.4, minGapMm: 0.3 },
+});
+
+for (const style of BODY_STYLES) {
+  const sealSpec = librarySpec(style.id);
+  const polygons = textLikePolygons();
+  const mesh = await buildSeal(sealSpec, polygons);
+  const b = meshBounds(mesh);
+  const footprint = Math.max(b.max[0]! - b.min[0]!, b.max[1]! - b.min[1]!);
+  const height = b.max[2]! - b.min[2]!;
+
+  // 母体（同尺寸缩放后）的体积，用来证明图案真的刻进去了
+  const mother = await loadBody(style.id);
+  const motherBox = mother.boundingBox();
+  const footprintCm = Math.max(motherBox.max[0] - motherBox.min[0], motherBox.max[1] - motherBox.min[1]);
+  const scale = SIZE_MM / footprintCm;
+  const scaledMother = mother.scale([scale, scale, scale]);
+  const motherVolume = scaledMother.volume();
+  scaledMother.delete();
+
+  // 期望高度：源模型高度（源单位）× 同一个 scale
+  const expectedHeight = style.sourceBoxCm.z * scale;
+
+  check(mesh.status === 'NoError', `${style.label}：status NoError`, `${mesh.status}`);
+  check(mesh.triangleCount < 20000, `${style.label}：面数 < 2 万`, `${mesh.triangleCount} 面`);
+  check(
+    Math.abs(footprint - SIZE_MM) < 0.2,
+    `${style.label}：底面足迹 ≈ ${SIZE_MM}mm`,
+    `${footprint.toFixed(2)}mm（源 ${style.sourceBoxCm.x}cm × ${scale.toFixed(3)}）`,
+  );
+  check(
+    Math.abs(height - expectedHeight) < 0.5,
+    `${style.label}：高度 ≈ 源比例 × scale`,
+    `${height.toFixed(2)}mm vs 期望 ${expectedHeight.toFixed(2)}mm`,
+  );
+  check(Math.abs(b.min[2]!) < 0.05, `${style.label}：底面贴 z=0`, `zMin=${b.min[2]!.toFixed(3)}`);
+  check(
+    meshVolume(mesh) < motherVolume - 1,
+    `${style.label}：刻完体积小于母体（真刻进去了）`,
+    `${meshVolume(mesh).toFixed(1)} < ${motherVolume.toFixed(1)} mm³（刻掉 ${(motherVolume - meshVolume(mesh)).toFixed(1)}）`,
+  );
+  check(
+    !(mesh.violations ?? []).some((v) => v.severity === 'error'),
+    `${style.label}：没有阻断导出的 error`,
+    (mesh.violations ?? []).map((v) => `${v.severity}:${v.rule}`).join(',') || '无',
+  );
+}
+
+// 负向：把 flipUpsideDown 打开（等于把圆角翻到下面），断言必须响——
+// 一条永远不触发的守卫等于没有守卫。
+const classicStyle = BODY_STYLES.find((style) => style.id === 'classic')!;
+classicStyle.flipUpsideDown = true;
+setBodyReader(null); // 传 null 恢复 fetch 并清缓存
+let orientationError: unknown = null;
+try {
+  await loadBody('classic');
+} catch (error) {
+  orientationError = error;
+}
+classicStyle.flipUpsideDown = false;
+setBodyReader(null);
+check(
+  orientationError instanceof SealGeometryError && orientationError.status === 'BodyBaseNotFlat',
+  '朝向守卫：圆角朝下时抛 BodyBaseNotFlat（不是默默出章）',
+  orientationError instanceof SealGeometryError
+    ? orientationError.message.slice(0, 70)
+    : String(orientationError),
+);
+
+// 阳刻 + 外部主体必须抛可读错误，而不是打出一枚歪的章
+let libraryRaisedError: unknown = null;
+try {
+  const raisedSpec = { ...librarySpec('classic'), relief: { mode: 'raised' as const, depthMm: 1.2 } };
+  await buildSeal(raisedSpec, textLikePolygons());
+} catch (error) {
+  libraryRaisedError = error;
+}
+check(
+  libraryRaisedError instanceof SealGeometryError && libraryRaisedError.status === 'ExternalBodyRequiresEngrave',
+  '阳刻 + 外部主体：抛 ExternalBodyRequiresEngrave',
+  libraryRaisedError instanceof SealGeometryError
+    ? libraryRaisedError.message.slice(0, 60)
+    : String(libraryRaisedError),
+);
+
 console.log(failed === 0 ? '\n全部通过' : `\n${failed} 项失败`);
 process.exit(failed === 0 ? 0 : 1);
 

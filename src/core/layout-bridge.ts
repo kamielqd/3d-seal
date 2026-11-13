@@ -2,13 +2,13 @@
  * 把各图层的 layout 输出收集成几何层要的多边形列表。
  * layout 输出 { points: Vec2[] }，几何层要 { outer, holes }，中间由 polygon-bridge 归组。
  */
-import { ensureFont, resolveFontId } from '../layout/fonts';
-import { textToPolygons, verticalTextToPolygons, type GlyphFont } from '../layout/text';
-import { ringTextPolygons } from '../layout/ring';
-import { huiwenTextPolygons } from '../layout/huiwen';
-import { fromLayoutPolygons } from './polygon-bridge';
-import type { Layer, SealSpec, TextLayer } from './spec';
-import type { Polygon2D as GeomPolygon } from '../geometry/types';
+import { ensureFont, resolveFontId } from '../layout/fonts.ts';
+import { textToPolygons, verticalTextToPolygons, type GlyphFont } from '../layout/text.ts';
+import { ringTextPolygons } from '../layout/ring.ts';
+import { huiwenTextPolygons } from '../layout/huiwen.ts';
+import { fromLayoutPolygons } from './polygon-bridge.ts';
+import type { Layer, SealSpec, TextLayer } from './spec.ts';
+import type { Polygon2D as GeomPolygon } from '../geometry/types.ts';
 
 export interface LayoutPolygon {
   points: { x: number; y: number }[];

@@ -28,6 +28,8 @@
  */
 
 import type { BodyConfig, PrintConfig, ReliefConfig } from '../core/spec.ts';
+import { isBodyStyleId, loadBody } from './body-library.ts';
+import type { BodyStyleId } from './body-library.ts';
 import { fromCrossSection, getManifold, prepareSectionWithReport } from './crosssection.ts';
 import type { ManifoldKit, PrepareReport } from './crosssection.ts';
 import { checkLayerOverlap, checkPrintability } from './printability.ts';
@@ -250,6 +252,11 @@ export async function buildSeal(spec: SealBuildSpec, polygons: readonly Polygon2
   const relief = spec.relief;
   const print = spec.print;
 
+  // 外部主体：spec.body.styleId 有值就忽略 shape/border/handle，走模型库那条路。
+  // 两条路最后都收进 finishSeal()，保证校验口径只有一份。
+  const styleId = readBodyStyleId(body);
+  if (styleId !== null) return buildSealWithLibraryBody(kit, spec, polygons, styleId);
+
   const thickness = Math.max(0.8, body.baseThicknessMm);
   const depth = Math.max(0.2, relief.depthMm);
   const raised = relief.mode !== 'engraved';
@@ -359,14 +366,47 @@ export async function buildSeal(spec: SealBuildSpec, polygons: readonly Polygon2
     ensureStatus(solid, '面朝上翻转');
   }
 
+  return finishSeal({
+    kit,
+    spec,
+    solid,
+    polygons,
+    prepared,
+    prepareReport,
+    bodyShape: body.shape,
+    orientation,
+  });
+}
+
+/**
+ * 收尾：转实体网格 → 统计 → 可打印性校验 → 跨图层重叠。
+ *
+ * 两条主体路径（程序生成的底板 / 外部模型库）共用这一份，避免校验口径分叉。
+ * 会接管并释放 `solid` 与 `prepared` 的所有权。
+ */
+async function finishSeal(args: {
+  kit: ManifoldKit;
+  spec: SealBuildSpec;
+  solid: Solid;
+  polygons: readonly Polygon2D[];
+  prepared: CS | null;
+  prepareReport: PrepareReport | null;
+  bodyShape: string;
+  orientation: SealOrientation;
+}): Promise<SolidMesh> {
+  const { kit, spec, polygons, solid } = args;
+  const body = spec.body;
+  const relief = spec.relief;
+  let prepared = args.prepared;
+
   const mesh = toSolidMesh(kit, solid, '最终实体');
   const status = mesh.status;
   lastStats = {
     triangles: mesh.triangleCount,
     status,
-    bodyShape: body.shape,
+    bodyShape: args.bodyShape,
     relief: relief.mode,
-    orientation,
+    orientation: args.orientation,
     polygonCount: polygons.length,
   };
 
@@ -378,8 +418,8 @@ export async function buildSeal(spec: SealBuildSpec, polygons: readonly Polygon2
       solid: mesh,
       body,
       relief,
-      print: print ?? { process: 'fdm', minStrokeMm: 0.4, minGapMm: 0.4 },
-      prepare: prepareReport,
+      print: spec.print ?? { process: 'fdm', minStrokeMm: 0.4, minGapMm: 0.4 },
+      prepare: args.prepareReport,
     });
   } catch (error) {
     mesh.violations = [{
@@ -415,6 +455,108 @@ export async function buildSeal(spec: SealBuildSpec, polygons: readonly Polygon2
     throw new SealGeometryError('最终实体', status, '几何生成结果为空（可能图案完全落在章面之外）。');
   }
   return mesh;
+}
+
+/* ------------------------------------------------------------------ */
+/* 外部主体                                                            */
+/* ------------------------------------------------------------------ */
+
+/** body 上可能带的 styleId（spec 由协调层维护，这里按结构化类型读，不硬依赖）。 */
+type BodyWithStyle = BodyConfig & { readonly styleId?: unknown };
+
+function readBodyStyleId(body: BodyConfig): BodyStyleId | null {
+  const raw = (body as BodyWithStyle).styleId;
+  return isBodyStyleId(raw) ? raw : null;
+}
+
+/**
+ * 外部主体路径：模型库里的章体 + 阴刻图案。
+ *
+ *   - 缩放：底面足迹缩到 `body.sizeMm`（源单位是 cm），居中到原点、底面 z=0
+ *   - 浮雕：只支持阴刻。图案挤出成柱体从 z=-0.02 切到 depth，与母体求差
+ *   - 边框/手柄：模型自带形制，忽略 `body.border` / `body.handle`，不报错
+ *   - 打印取向：强制盖印面贴床（模型是实心的，翻面只会把它倒过来）
+ *   - 最后照旧镜像 X
+ */
+async function buildSealWithLibraryBody(
+  kit: ManifoldKit,
+  spec: SealBuildSpec,
+  polygons: readonly Polygon2D[],
+  styleId: BodyStyleId,
+): Promise<SolidMesh> {
+  const body = spec.body;
+  const relief = spec.relief;
+  const print = spec.print;
+  const depth = Math.max(0.2, relief.depthMm);
+
+  if (relief.mode !== 'engraved') {
+    throw new SealGeometryError(
+      '外部主体',
+      'ExternalBodyRequiresEngrave',
+      '外部主体只能阴刻：阳刻要把整个图案挤出成凸台，而外部模型章面上没有可承接的平面，凸台会悬空、需要支撑，盖出来还会歪。请把浮雕模式改成阴刻。',
+    );
+  }
+
+  // 共享缓存实例，不能 delete；下面只用它派生新实体
+  const source = await loadBody(styleId);
+  const sourceBox = source.boundingBox();
+  const footprintCm = Math.max(sourceBox.max[0] - sourceBox.min[0], sourceBox.max[1] - sourceBox.min[1]);
+  if (!(footprintCm > 0)) {
+    throw new SealGeometryError('外部主体', 'EmptyBody', `${styleId} 的底面足迹为 0，无法缩放。`);
+  }
+  // 源坐标单位是 cm：footprintCm 是「以源单位计的足迹」，乘 k 之后坐标直接变成 mm
+  // （2.00cm 的底座 × k=15 = 30mm）
+  const scale = body.sizeMm / footprintCm;
+  const scaled = source.scale([scale, scale, scale]);
+  const scaledBox = scaled.boundingBox();
+  const placed = scaled.translate([
+    -(scaledBox.min[0] + scaledBox.max[0]) / 2,
+    -(scaledBox.min[1] + scaledBox.max[1]) / 2,
+    -scaledBox.min[2],
+  ]);
+  scaled.delete();
+  ensureStatus(placed, '主体缩放');
+  let solid: Solid = placed;
+
+  // 图案 → 阴刻槽（和程序底板用的是同一段逻辑：挤出柱体，向下多出 overlap 防共面）
+  let prepared: CS | null = null;
+  let prepareReport: PrepareReport | null = null;
+  if (polygons.length > 0) {
+    const prep = await prepareSectionWithReport(polygons, {
+      minStrokeMm: print?.minStrokeMm ?? 0.4,
+      minGapMm: print?.minGapMm ?? 0.4,
+      simplifyMm: 0.02,
+    });
+    prepared = prep.section;
+    prepareReport = prep.report;
+
+    if (!prepared.isEmpty()) {
+      const overlap = 0.02;
+      const cutter = prepared.extrude(depth + overlap).translate([0, 0, -overlap]);
+      const next = solid.subtract(cutter);
+      solid.delete();
+      cutter.delete();
+      ensureStatus(next, '阴刻差集');
+      solid = next;
+    }
+  }
+
+  // 镜像 X：印章必须镜像，盖出来才是正的
+  const mirrored = solid.mirror([1, 0, 0]);
+  solid.delete();
+  solid = mirrored;
+
+  return finishSeal({
+    kit,
+    spec,
+    solid,
+    polygons,
+    prepared,
+    prepareReport,
+    bodyShape: `library:${styleId}`,
+    // 外部主体是实心模型，face-up 翻面只会把它倒过来，所以固定贴床
+    orientation: 'face-down',
+  });
 }
 
 /** 把 manifold 实体转成 SolidMesh，并做封闭性检查。 */

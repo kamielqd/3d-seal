@@ -5,6 +5,15 @@
  */
 
 export type BodyShape = 'square' | 'circle' | 'polygon';
+/**
+ * 内置外部主体（`public/bodies/*.stl`）。
+ *
+ * 这些是用户自己建的章体模型：平面朝下当刻印面、圆角朝上。选中后：
+ * - `sizeMm` 仍是**底面尺寸**，整个模型等比缩放（高度随模型比例走）
+ * - `shape` / `border` / `handle` 全部忽略，形制由模型自带
+ * - 只支持阴刻（阳刻要在面上挖整个凹坑，会切穿底座）
+ */
+export type BodyStyleId = 'classic' | 'cylinder' | 'column' | 'dome';
 export type BorderStyle = 'none' | 'thin' | 'thick' | 'double';
 export type HandleStyle = 'none' | 'knob' | 'bridge';
 export type ReliefMode = 'raised' | 'engraved';
@@ -35,7 +44,26 @@ export interface BodyConfig {
   handle: HandleStyle;
   handleHeightMm: number;
   handleDiameterMm: number;
+  /** 选了外部主体样式就忽略上面的 shape/border/handle，只保留 sizeMm（底面尺寸） */
+  styleId?: BodyStyleId;
 }
+
+/** 主体样式清单（UI 用；几何侧按 id 去 public/bodies 取对应 STL）。 */
+export const BODY_STYLES: ReadonlyArray<{
+  id: BodyStyleId;
+  name: string;
+  note: string;
+  /**
+   * 总高 / 底面尺寸。模型只按底面缩放到 sizeMm，高度随这个比例走——
+   * 圆柱、立方柱是瘦高型（1.17cm 宽、2.6cm 高），30mm 章面下会到 65mm 高。
+   */
+  heightRatio: number;
+}> = [
+  { id: 'classic', name: '常见样式', note: '方底座 + 颈 + 球钮，最像传统印章', heightRatio: 1.017 },
+  { id: 'cylinder', name: '圆柱', note: '细高圆柱，握柱子盖', heightRatio: 2.150 },
+  { id: 'column', name: '立方柱', note: '细高方柱，握柱子盖', heightRatio: 2.198 },
+  { id: 'dome', name: '石墩', note: '圆鼓身 + 双层台座，敦实', heightRatio: 0.965 },
+];
 
 export interface ReliefConfig {
   mode: ReliefMode;
