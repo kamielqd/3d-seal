@@ -48,6 +48,12 @@ export default function App() {
   const [stats, setStats] = useState<BuildStats | null>(null);
   /** 每个文字图层的实际字号（自动适应章面后可能小于设定值） */
   const [fits, setFits] = useState<LayerFit[]>([]);
+  /** 右栏：元素属性 / 章体设置 */
+  const [inspectorTab, setInspectorTab] = useState<'element' | 'body'>('element');
+  /** 底部状态栏：展开打印校验明细 */
+  const [issuesOpen, setIssuesOpen] = useState(false);
+  /** 中间舞台：画布（编辑） / 3D 预览（看实体） */
+  const [viewTab, setViewTab] = useState<'canvas' | '3d'>('canvas');
   /** 元素清单里选中的层；为空时退回第一层 */
   const [selectedId, setSelectedId] = useState<string | null>(null);
   /** 每个文字层的可读轮廓（叠在预览图上做拖拽与框选） */
@@ -389,22 +395,21 @@ export default function App() {
   }, [mesh, building, elapsed, stage]);
 
   return (
-    <div style={{ display: 'flex', flexDirection: narrow ? 'column-reverse' : 'row', height: '100vh', fontFamily: 'system-ui, sans-serif', background: '#faf9f7' }}>
-      <aside
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', fontFamily: 'system-ui, sans-serif', background: '#faf9f7', minHeight: 0, overflow: 'hidden' }}>
+      <header
         style={{
-          width: narrow ? '100%' : 300,
-          flex: narrow ? '0 0 46vh' : '0 0 300px',
-          minHeight: 0,
-          boxSizing: 'border-box',
-          padding: 16,
-          overflowY: 'auto',
-          borderRight: narrow ? 'none' : '1px solid #e6e2da',
-          borderTop: narrow ? '1px solid #e6e2da' : 'none',
+          flex: '0 0 auto',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 10,
+          padding: '8px 14px',
+          background: '#fff',
+          borderBottom: '1px solid #e6e2da',
         }}
       >
-        <h1 style={{ fontSize: 17, margin: '0 0 10px' }}>印章工坊</h1>
-
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 6 }}>
+        <span style={{ fontSize: 14, fontWeight: 600 }}>印章工坊</span>
+        <span style={{ fontSize: 11, color: '#a39c91' }}>3D 可打印印章生成器</span>
+        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginLeft: 10 }}>
           {PRESETS.map((p) => (
             <button
               key={p.id}
@@ -415,8 +420,8 @@ export default function App() {
               }}
               style={{
                 ...miniBtnStyle,
-                padding: '5px 9px',
-                fontSize: 12,
+                padding: '4px 8px',
+                fontSize: 11.5,
                 ...(activePreset === p.id
                   ? { borderColor: '#b3261e', color: '#b3261e', background: '#fdf3f2' }
                   : {}),
@@ -426,10 +431,74 @@ export default function App() {
             </button>
           ))}
         </div>
-        <div style={{ fontSize: 11, color: '#a39c91', marginBottom: 14, lineHeight: 1.5 }}>
-          预设按 FDM 能直接打配：阴刻 + 盖印面贴床。阳刻只有「平装阳刻」那套不用支撑。
+        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ fontSize: 11, color: '#7a746b' }}>
+            {spec.body.sizeMm}mm · {stats ? `总高 ${stats.heightMm.toFixed(1)}mm` : '—'}
+          </span>
+          <button
+            onClick={() => download('stl')}
+            disabled={!mesh || blocking}
+            style={{
+              padding: '6px 12px',
+              borderRadius: 6,
+              border: '1px solid #b3261e',
+              background: blocking ? '#c9c2b6' : '#b3261e',
+              color: '#fff',
+              fontSize: 12.5,
+              cursor: blocking ? 'not-allowed' : 'pointer',
+            }}
+          >
+            导出 STL
+          </button>
+        </div>
+      </header>
+
+      <div
+        style={{
+          flex: 1,
+          minHeight: 0,
+          display: 'grid',
+          gridTemplateColumns: narrow ? '1fr' : '260px minmax(0, 1fr) 320px',
+          gridTemplateRows: narrow ? 'minmax(0, 1fr) auto auto' : 'minmax(0, 1fr)',
+        }}
+      >
+      <aside
+        style={{
+          gridColumn: narrow ? '1' : '3',
+          gridRow: narrow ? '3' : '1',
+          minHeight: 0,
+          boxSizing: 'border-box',
+          padding: 16,
+          overflowY: 'auto',
+          overflowX: 'hidden',
+          background: '#fff',
+          borderLeft: narrow ? 'none' : '1px solid #e6e2da',
+          borderTop: narrow ? '1px solid #e6e2da' : 'none',
+        }}
+      >
+        <div style={{ display: 'flex', gap: 6, marginBottom: 14 }}>
+          {([['element', '元素属性'], ['body', '章体设置']] as const).map(([tab, label]) => (
+            <button
+              key={tab}
+              onClick={() => setInspectorTab(tab)}
+              style={{
+                flex: 1,
+                padding: '6px 0',
+                fontSize: 12,
+                cursor: 'pointer',
+                borderRadius: 6,
+                border: `1px solid ${inspectorTab === tab ? '#b3261e' : '#e6e2da'}`,
+                background: inspectorTab === tab ? '#fdf3f2' : '#fff',
+                color: inspectorTab === tab ? '#b3261e' : '#7a746b',
+              }}
+            >
+              {label}
+            </button>
+          ))}
         </div>
 
+        {inspectorTab === 'body' && (
+          <>
         <Field label="主体样式">
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
             {BODY_STYLES.map((st) => (
@@ -634,18 +703,14 @@ export default function App() {
             style={{ width: '100%' }}
           />
         </Field>
+        <div style={{ fontSize: 11, color: '#a39c91', lineHeight: 1.5 }}>
+          打印方向固定为盖印面贴热床（face-down），不提供切换。
+        </div>
+          </>
+        )}
 
-        <ElementList
-          layers={spec.layers}
-          selectedId={selectedLayer?.id ?? null}
-          onSelect={setSelectedId}
-          onAddText={addTextLayer}
-          onAddImage={(f) => { void pickImage(f); }}
-          onDelete={deleteLayer}
-          onDuplicate={duplicateLayer}
-          onMove={moveLayer}
-        />
-
+        {inspectorTab === 'element' && (
+          <>
         {textLayer && (
           <>
         <Field label="文字">
@@ -787,7 +852,7 @@ export default function App() {
           </div>
         )}
 
-        <Field label={`位置 X ${textLayer.anchor.x.toFixed(2)}　Y ${textLayer.anchor.y.toFixed(2)}（0 = 正中，±1 ≈ 章面四分之三处）`}>
+        <Field label={`位置 X ${textLayer.anchor.x.toFixed(2)}　Y ${textLayer.anchor.y.toFixed(2)}`}>
           <input
             type="range" min={-1} max={1} step={0.02} value={textLayer.anchor.x}
             onChange={(e) => updateLayer(textLayer.id, (l) => { if (l.kind === 'text') l.anchor.x = Number(e.target.value); })}
@@ -804,6 +869,9 @@ export default function App() {
           >
             回到正中
           </button>
+          <div style={{ fontSize: 10.5, color: '#a39c91', marginTop: 4, lineHeight: 1.4 }}>
+            0 = 正中，±1 ≈ 章面四分之三处。也可以直接在画布上拖。
+          </div>
         </Field>
 
         <Field label={`旋转 ${textLayer.transform.rotateDeg}°　缩放 ${textLayer.transform.scale.toFixed(2)}`}>
@@ -820,19 +888,6 @@ export default function App() {
         </Field>
           </>
         )}
-
-        <Field label="图像（可选，图片不出本机）">
-          <input
-            type="file"
-            accept="image/*"
-            onChange={(e) => {
-              const f = e.target.files?.[0] ?? null;
-              void pickImage(f);
-              e.target.value = '';
-            }}
-            style={{ fontSize: 12, width: '100%' }}
-          />
-        </Field>
 
         {imageLayers.filter((l) => l.id === selectedImage?.id).map((l) => (
           <div key={l.id} style={cardStyle}>
@@ -933,126 +988,186 @@ export default function App() {
           </div>
         ))}
 
-        <div style={{ fontSize: 11, color: '#a39c91', marginBottom: 10, lineHeight: 1.5 }}>
-          打印方向固定为盖印面贴热床（face-down），不提供切换。
-        </div>
-        <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
-          <button style={btnStyle} disabled={!mesh || blocking} onClick={() => download('stl')}>导出 STL</button>
-          <button style={btnStyle} disabled={!mesh || blocking} onClick={() => download('3mf')}>导出 3MF</button>
-        </div>
-        <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-          <button style={btnStyle} onClick={() => { void share(); }}>复制分享链接</button>
-        </div>
-        {notice && <p style={{ color: '#2e7d32', fontSize: 12, marginTop: 8, lineHeight: 1.5 }}>{notice}</p>}
-        {blocking && (
-          <p style={{ color: '#b3261e', fontSize: 12, marginTop: 8, lineHeight: 1.5 }}>
-            有阻断级问题，导出已禁用——先按上面的提示改（多数情况切回阴刻即可）。
-          </p>
+          </>
         )}
-
-        {printIssues.length > 0 && (
-          <div style={{ marginTop: 14 }}>
-            <div style={{ fontSize: 12, color: '#7a746b', marginBottom: 4 }}>
-              打印校验（{printIssues.length}）
-            </div>
-            {printIssues.map((v, i) => (
-              <div key={`${v.rule}-${i}`} style={{ ...violationStyle, color: v.severity === 'error' ? '#b3261e' : '#8a5a00' }}>
-                <strong>{v.rule}</strong>　{v.message}
-              </div>
-            ))}
-          </div>
-        )}
-
-        {hints.length > 0 && (
-          <div style={{ marginTop: 14 }}>
-            <div style={{ fontSize: 12, color: '#7a746b', marginBottom: 4 }}>
-              提示（{hints.length}）· 不影响导出
-            </div>
-            {hints.map((v, i) => (
-              <div key={`hint-${v.rule}-${i}`} style={{ ...violationStyle, color: '#7a746b' }}>
-                <strong>{v.rule}</strong>　{v.message}
-              </div>
-            ))}
-          </div>
-        )}
-
-        {error && <p style={{ color: '#b3261e', fontSize: 12, marginTop: 12 }}>{error}</p>}
-
-        <div style={{ marginTop: 18, paddingTop: 12, borderTop: '1px solid #eeeae1' }}>
-          <button
-            onClick={() => setShowAbout(true)}
-            style={{ ...miniBtnStyle, padding: '5px 10px' }}
-          >
-            字体与授权
-          </button>
-        </div>
       </aside>
 
-      <main style={{ flex: 1, display: 'flex', flexDirection: narrow ? 'column' : 'row', minWidth: 0, minHeight: 0 }}>
-        <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
-          <Viewer
-            mesh={mesh}
-            orientation={spec.print.orientation ?? 'face-down'}
-            minHeight={narrow ? 240 : 420}
-            sizeMm={spec.body.sizeMm}
-          />
-          <div style={{ position: 'absolute', left: 12, bottom: 10, fontSize: 12, color: '#7a746b' }}>{status}</div>
-          <div style={{ position: 'absolute', left: 12, top: 10, fontSize: 11, color: '#a39c91' }}>
-            模型视角（实体已镜像）
+      <aside
+        style={{
+          gridColumn: '1',
+          gridRow: narrow ? '2' : '1',
+          minHeight: 0,
+          boxSizing: 'border-box',
+          padding: 14,
+          overflowY: 'auto',
+          background: '#fff',
+          borderRight: narrow ? 'none' : '1px solid #e6e2da',
+          borderTop: narrow ? '1px solid #e6e2da' : 'none',
+        }}
+      >
+        <ElementList
+          layers={spec.layers}
+          selectedId={selectedLayer?.id ?? null}
+          onSelect={setSelectedId}
+          onAddText={addTextLayer}
+          onAddImage={(f) => { void pickImage(f); }}
+          onDelete={deleteLayer}
+          onDuplicate={duplicateLayer}
+          onMove={moveLayer}
+        />
+      </aside>
+
+      <main style={{ gridColumn: narrow ? '1' : '2', gridRow: '1', display: 'flex', flexDirection: 'column', minWidth: 0, minHeight: 0, background: '#faf9f7' }}>
+        <div style={{ display: 'flex', gap: 6, padding: '10px 16px 0', alignItems: 'flex-end' }}>
+          {(['canvas', '3d'] as const).map((tab) => (
+            <button
+              key={tab}
+              onClick={() => setViewTab(tab)}
+              style={{
+                fontSize: 12,
+                padding: '5px 12px',
+                cursor: 'pointer',
+                borderRadius: '6px 6px 0 0',
+                border: `1px solid ${viewTab === tab ? '#e6e2da' : 'transparent'}`,
+                borderBottomColor: viewTab === tab ? '#faf9f7' : 'transparent',
+                background: viewTab === tab ? '#faf9f7' : 'transparent',
+                color: viewTab === tab ? '#3d3a34' : '#7a746b',
+              }}
+            >
+              {tab === 'canvas' ? '画布' : '3D 预览'}
+            </button>
+          ))}
+          <div style={{ marginLeft: 'auto', fontSize: 11, color: '#a39c91', paddingBottom: 3 }}>
+            {viewTab === 'canvas' ? '按住元素拖动；虚线是章面轮廓，细十字是中线' : '模型视角（实体已镜像）'}
           </div>
         </div>
 
+        {viewTab === 'canvas' ? (
+          <div style={{ flex: 1, minHeight: 0, display: 'grid', placeItems: 'center', padding: 18, overflow: 'hidden' }}>
+            {previewUrl ? (
+              <div
+                style={{
+                  position: 'relative',
+                  width: 'min(100%, 58vh)',
+                  aspectRatio: '1 / 1',
+                  borderRadius: 8,
+                  border: '1px solid #eee7dc',
+                  background: '#fff',
+                  overflow: 'hidden',
+                }}
+              >
+                <img src={previewUrl} alt="盖印效果预览" style={{ width: '100%', display: 'block' }} />
+                <CanvasEditor
+                  sizeMm={spec.body.sizeMm}
+                  paddingMm={1.5}
+                  shape={spec.body.shape}
+                  sides={spec.body.sides}
+                  layers={canvasLayers}
+                  selectedId={selectedLayer?.id ?? null}
+                  onSelect={setSelectedId}
+                  onAnchor={(id, x, y) =>
+                    updateLayer(id, (l) => { l.anchor.x = x; l.anchor.y = y; })
+                  }
+                />
+              </div>
+            ) : (
+              <div style={{ fontSize: 12, color: '#b0a99e' }}>—</div>
+            )}
+          </div>
+        ) : (
+          <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
+            <Viewer
+              mesh={mesh}
+              orientation={spec.print.orientation ?? 'face-down'}
+              minHeight={narrow ? 240 : 420}
+              sizeMm={spec.body.sizeMm}
+            />
+            <div style={{ position: 'absolute', left: 12, bottom: 10, fontSize: 12, color: '#7a746b' }}>{status}</div>
+          </div>
+        )}
+      </main>
+      </div>
+
+      {issuesOpen && (
         <div
           style={{
-            flex: narrow ? '0 0 auto' : '0 0 250px',
-            minHeight: narrow ? 100 : 0,
-            borderLeft: narrow ? 'none' : '1px solid #e6e2da',
-            borderTop: narrow ? '1px solid #e6e2da' : 'none',
-            background: '#fff',
-            padding: 12,
-            boxSizing: 'border-box',
-            display: 'flex',
-            flexDirection: narrow ? 'row' : 'column',
-            alignItems: narrow ? 'center' : 'stretch',
-            gap: 10,
+            flex: '0 0 auto',
+            maxHeight: '30vh',
+            overflowY: 'auto',
+            borderTop: '1px solid #e6e2da',
+            background: '#fffdf9',
+            padding: '10px 14px',
           }}
         >
-          <div style={{ fontSize: 12, color: '#7a746b', whiteSpace: 'nowrap' }}>盖印效果（字是正的）</div>
-          {previewUrl ? (
-            <div
-              style={{
-                position: 'relative',
-                width: narrow ? 96 : '100%',
-                flex: '0 0 auto',
-                borderRadius: 6,
-                border: '1px solid #eee7dc',
-                overflow: 'hidden',
-              }}
-            >
-              <img src={previewUrl} alt="盖印效果预览" style={{ width: '100%', display: 'block' }} />
-              <CanvasEditor
-                sizeMm={spec.body.sizeMm}
-                paddingMm={1.5}
-                shape={spec.body.shape}
-                sides={spec.body.sides}
-                layers={canvasLayers}
-                selectedId={selectedLayer?.id ?? null}
-                onSelect={setSelectedId}
-                onAnchor={(id, x, y) =>
-                  updateLayer(id, (l) => { l.anchor.x = x; l.anchor.y = y; })
-                }
-              />
+          {printIssues.length > 0 && (
+            <div style={{ marginBottom: 10 }}>
+              <div style={{ fontSize: 12, color: '#7a746b', marginBottom: 4 }}>打印校验（{printIssues.length}）</div>
+              {printIssues.map((v, i) => (
+                <div key={`${v.rule}-${i}`} style={{ ...violationStyle, color: v.severity === 'error' ? '#b3261e' : '#8a5a00' }}>
+                  <strong>{v.rule}</strong>　{v.message}
+                </div>
+              ))}
             </div>
-          ) : (
-            <div style={{ fontSize: 12, color: '#b0a99e' }}>—</div>
           )}
-          {!narrow && (
-            <div style={{ fontSize: 11, color: '#b0a99e', lineHeight: 1.5 }}>
-              模型整体是镜像的，扣下去才印得正。这两个视角看起来相反是正常的。
+          {hints.length > 0 && (
+            <div>
+              <div style={{ fontSize: 12, color: '#7a746b', marginBottom: 4 }}>提示（{hints.length}）· 不影响导出</div>
+              {hints.map((v, i) => (
+                <div key={`hint-${v.rule}-${i}`} style={{ ...violationStyle, color: '#7a746b' }}>
+                  <strong>{v.rule}</strong>　{v.message}
+                </div>
+              ))}
             </div>
+          )}
+          {printIssues.length === 0 && hints.length === 0 && (
+            <div style={{ fontSize: 12, color: '#2e7d32' }}>没有可打印性问题。</div>
           )}
         </div>
-      </main>
+      )}
+
+      <footer
+        style={{
+          flex: '0 0 auto',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 10,
+          padding: '6px 12px',
+          borderTop: '1px solid #e6e2da',
+          background: '#fff',
+          fontSize: 11.5,
+          color: '#7a746b',
+          minHeight: 38,
+          boxSizing: 'border-box',
+        }}
+      >
+        <span
+          style={{
+            width: 7,
+            height: 7,
+            borderRadius: '50%',
+            background: error || blocking ? '#b3261e' : '#2e7d32',
+            display: 'inline-block',
+          }}
+        />
+        <span>
+          {spec.body.sizeMm}mm · {status}
+          {stats ? ` · 总高 ${stats.heightMm.toFixed(1)}mm` : ''}
+        </span>
+        <button
+          onClick={() => setIssuesOpen((v) => !v)}
+          style={{ ...miniBtnStyle, padding: '3px 8px', color: printIssues.length > 0 ? '#b3261e' : '#7a746b' }}
+        >
+          {printIssues.length + hints.length} 条提示 {issuesOpen ? '▾' : '▸'}
+        </button>
+        {notice && <span style={{ color: '#2e7d32' }}>{notice}</span>}
+        {error && <span style={{ color: '#b3261e' }}>{error}</span>}
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+          <button style={miniBtnStyle} onClick={() => { void share(); }}>复制分享链接</button>
+          <button style={miniBtnStyle} disabled={!mesh || blocking} onClick={() => download('3mf')}>导出 3MF</button>
+          <button style={miniBtnStyle} onClick={() => setShowAbout(true)}>字体与授权</button>
+        </div>
+      </footer>
+
       {showAbout && <About onClose={() => setShowAbout(false)} />}
     </div>
   );
@@ -1073,16 +1188,6 @@ const inputStyle: React.CSSProperties = {
   border: '1px solid #ddd7cc',
   borderRadius: 6,
   background: '#fff',
-  fontSize: 13,
-};
-
-const btnStyle: React.CSSProperties = {
-  flex: 1,
-  padding: '8px 10px',
-  borderRadius: 6,
-  border: '1px solid #ddd7cc',
-  background: '#fff',
-  cursor: 'pointer',
   fontSize: 13,
 };
 

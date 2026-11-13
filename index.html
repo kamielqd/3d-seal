@@ -7,6 +7,11 @@
     <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
     <meta name="theme-color" content="#b3261e" />
     <meta name="description" content="浏览器端生成可 3D 打印的印章模型：方章、圆章、多边形，文字与图像，阳刻阴刻，导出 STL/3MF。" />
+    <style>
+      /* 应用自己管布局：清掉浏览器默认的 8px body 外边距，否则整页会多出一圈滚动条 */
+      html, body, #root { margin: 0; padding: 0; height: 100%; }
+      body { overflow: hidden; background: #faf9f7; }
+    </style>
     <script>
       // 启动期的运行时错误直接显示到页面上，避免白屏无从排查
       (function () {
