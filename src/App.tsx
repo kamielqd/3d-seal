@@ -1,6 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import Viewer, { type ViewerMesh } from './render/Viewer';
-import { createDefaultSpec, type BodyShape, type PrintOrientation, type SealSpec } from './core/spec';
+import {
+  createDefaultSpec,
+  createImageLayer,
+  serializeSpec,
+  deserializeSpec,
+  type BodyShape,
+  type ImageLayer,
+  type PrintOrientation,
+  type SealSpec,
+} from './core/spec';
 import { layoutFlatPolygons } from './core/layout-bridge';
 import { fromLayoutPolygons } from './core/polygon-bridge';
 import { toStlBlob } from './export/stl';
@@ -8,19 +17,23 @@ import { to3mfBlob } from './export/threemf';
 import { listFonts, DEFAULT_FONT_ID } from './layout/fonts';
 import { checkMissing } from './layout/missing';
 import { renderPreviewToDataURL } from './render/preview2d';
-import type { BuildResponse } from './worker/geometry.worker';
+import type { BuildResponse, ImagePayload } from './worker/geometry.worker';
 import type { SolidMesh } from './geometry/types';
 import type { Violation } from './geometry/printability';
 
 export default function App() {
-  const [spec, setSpec] = useState<SealSpec>(() => createDefaultSpec());
+  const [spec, setSpec] = useState<SealSpec>(() => specFromHash() ?? createDefaultSpec());
   const [mesh, setMesh] = useState<ViewerMesh | null>(null);
   const [error, setError] = useState<string>('');
+  const [notice, setNotice] = useState<string>('');
   const [building, setBuilding] = useState(false);
   const [elapsed, setElapsed] = useState<number>(0);
   const [stage, setStage] = useState<string>('');
   const [previewUrl, setPreviewUrl] = useState<string>('');
   const [violations, setViolations] = useState<Violation[]>([]);
+  /** 图像图层 id → 像素；不进 state，避免每次拖参数都深拷贝几 MB */
+  const imagesRef = useRef<Map<string, ImageData>>(new Map());
+  const [imageVersion, setImageVersion] = useState(0);
 
   const workerRef = useRef<Worker | null>(null);
   const workerErrRef = useRef<string>('');
@@ -93,16 +106,27 @@ export default function App() {
           setPreviewUrl('');
         }
         const polygons = fromLayoutPolygons(flat);
-        if (polygons.length === 0) {
+        const images: Record<string, ImagePayload> = {};
+        for (const l of spec.layers) {
+          if (l.kind !== 'image') continue;
+          const img = imagesRef.current.get(l.id);
+          if (img) images[l.id] = img;
+        }
+        if (polygons.length === 0 && Object.keys(images).length === 0) {
           setMesh(null);
-          setError('没有可生成的内容，先输入文字');
+          setError('没有可生成的内容：先输入文字或导入图像');
           setBuilding(false);
           return;
         }
         const id = ++seqRef.current;
         const res = await new Promise<BuildResponse>((resolve) => {
           pendingRef.current.set(id, resolve);
-          worker.postMessage({ id, spec: { body: spec.body, relief: spec.relief, print: spec.print }, polygons });
+          worker.postMessage({
+            id,
+            spec: { body: spec.body, relief: spec.relief, print: spec.print, layers: spec.layers },
+            polygons,
+            images,
+          });
           // 兜底：几何引擎初始化失败时不会回消息，不能一直转圈
           setTimeout(() => {
             if (pendingRef.current.has(id)) {
@@ -116,6 +140,23 @@ export default function App() {
           setMesh(res.mesh);
           setViolations(res.mesh.violations ?? []);
           setElapsed(performance.now() - t0);
+          // 图像描摹结果只有 worker 有，盖印效果要在建模回来后补画一遍
+          if (res.previewRings && res.previewRings.length > 0) {
+            try {
+              setPreviewUrl(
+                renderPreviewToDataURL(res.previewRings, {
+                  sizeMm: spec.body.sizeMm,
+                  dpi: 180,
+                  mirror: false,
+                  paddingMm: 1.5,
+                  paper: { enabled: true },
+                  ink: {},
+                }),
+              );
+            } catch {
+              /* 预览失败不影响建模 */
+            }
+          }
         } else {
           setMesh(null);
           setViolations([]);
@@ -131,7 +172,7 @@ export default function App() {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [spec]);
+  }, [spec, imageVersion]);
 
   const textLayer = spec.layers.find((l) => l.kind === 'text');
   const fontId = textLayer && textLayer.kind === 'text' ? textLayer.fontId : DEFAULT_FONT_ID;
@@ -140,6 +181,7 @@ export default function App() {
   const printIssues = violations.filter((v) => v.severity !== 'info');
   /** 阻断级问题：不允许导出（例如阳刻+手柄的 809mm² 悬空面） */
   const blocking = violations.some((v) => v.severity === 'error');
+  const imageLayers = spec.layers.filter((l): l is ImageLayer => l.kind === 'image');
 
   const patch = (fn: (s: SealSpec) => void) => {
     setSpec((prev) => {
@@ -147,6 +189,46 @@ export default function App() {
       fn(next);
       return next;
     });
+  };
+
+  const updateImage = (id: string, fn: (l: ImageLayer) => void) => {
+    patch((s) => {
+      const l = s.layers.find((x) => x.kind === 'image' && x.id === id);
+      if (l && l.kind === 'image') fn(l);
+    });
+  };
+
+  const removeImage = (id: string) => {
+    imagesRef.current.delete(id);
+    patch((s) => { s.layers = s.layers.filter((x) => x.id !== id); });
+    setImageVersion((v) => v + 1);
+  };
+
+  const pickImage = async (file: File | null) => {
+    if (!file) return;
+    setError('');
+    try {
+      const data = await decodeToImageData(file);
+      const layer = createImageLayer(URL.createObjectURL(file));
+      imagesRef.current.set(layer.id, data);
+      patch((s) => { s.layers.push(layer); });
+      setImageVersion((v) => v + 1);
+    } catch (e) {
+      setError(`图像读取失败：${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+
+  const share = async () => {
+    const bytes = new TextEncoder().encode(serializeSpec(spec));
+    const url = `${location.origin}${location.pathname}#s=${bytesToBase64(bytes)}`;
+    history.replaceState(null, '', url);
+    try {
+      await navigator.clipboard.writeText(url);
+      setNotice('分享链接已复制（参数不含图像像素，图片需重新导入）');
+    } catch {
+      setNotice('链接已写入地址栏，手动复制即可');
+    }
+    setTimeout(() => setNotice(''), 5000);
   };
 
   const download = (kind: 'stl' | '3mf') => {
@@ -306,6 +388,92 @@ export default function App() {
           />
         </Field>
 
+        <Field label="图像（可选，图片不出本机）">
+          <input
+            type="file"
+            accept="image/*"
+            onChange={(e) => {
+              const f = e.target.files?.[0] ?? null;
+              void pickImage(f);
+              e.target.value = '';
+            }}
+            style={{ fontSize: 12, width: '100%' }}
+          />
+        </Field>
+
+        {imageLayers.map((l) => (
+          <div key={l.id} style={cardStyle}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+              <strong style={{ fontSize: 12 }}>图像图层</strong>
+              <button onClick={() => removeImage(l.id)} style={miniBtnStyle}>移除</button>
+            </div>
+            {l.src ? (
+              <img
+                src={l.src}
+                alt="图像图层"
+                style={{ width: '100%', borderRadius: 4, border: '1px solid #eee7dc', marginBottom: 8 }}
+              />
+            ) : (
+              <div style={hintStyle}>分享链接不含像素，请重新导入这张图</div>
+            )}
+
+            <Field label={`图案宽度 ${l.widthMm}mm`}>
+              <input
+                type="range" min={5} max={40} step={1} value={l.widthMm}
+                onChange={(e) => updateImage(l.id, (x) => { x.widthMm = Number(e.target.value); })}
+                style={{ width: '100%' }}
+              />
+            </Field>
+
+            <Field label={l.trace.autoThreshold ? '阈值：自动（Otsu）' : `阈值 ${l.trace.threshold.toFixed(2)}`}>
+              <input
+                type="range" min={0.05} max={0.95} step={0.05} value={l.trace.threshold}
+                disabled={l.trace.autoThreshold}
+                onChange={(e) =>
+                  updateImage(l.id, (x) => {
+                    x.trace.threshold = Number(e.target.value);
+                    x.trace.autoThreshold = false;
+                  })
+                }
+                style={{ width: '100%', opacity: l.trace.autoThreshold ? 0.45 : 1 }}
+              />
+              <label style={checkRowStyle}>
+                <input
+                  type="checkbox" checked={l.trace.autoThreshold}
+                  onChange={(e) => updateImage(l.id, (x) => { x.trace.autoThreshold = e.target.checked; })}
+                />
+                自动阈值（Otsu）
+              </label>
+              <label style={checkRowStyle}>
+                <input
+                  type="checkbox" checked={l.trace.invert}
+                  onChange={(e) => updateImage(l.id, (x) => { x.trace.invert = e.target.checked; })}
+                />
+                反相（深色当墨）
+              </label>
+            </Field>
+
+            <Field label="描摹方式">
+              <select
+                value={l.trace.mode ?? 'silhouette'}
+                onChange={(e) => updateImage(l.id, (x) => { x.trace.mode = e.target.value as 'silhouette' | 'outline'; })}
+                style={inputStyle}
+              >
+                <option value="silhouette">实心块</option>
+                <option value="outline">线框（等宽环，线稿风）</option>
+              </select>
+            </Field>
+
+            <Field label={`去噪：丢弃小于 ${l.trace.despeckleAreaMm2}mm² 的碎块`}>
+              <input
+                type="range" min={0} max={10} step={0.5} value={l.trace.despeckleAreaMm2}
+                onChange={(e) => updateImage(l.id, (x) => { x.trace.despeckleAreaMm2 = Number(e.target.value); })}
+                style={{ width: '100%' }}
+              />
+            </Field>
+          </div>
+        ))}
+
         <Field label="手柄">
           <select
             value={spec.body.handle}
@@ -342,6 +510,10 @@ export default function App() {
           <button style={btnStyle} disabled={!mesh || blocking} onClick={() => download('stl')}>导出 STL</button>
           <button style={btnStyle} disabled={!mesh || blocking} onClick={() => download('3mf')}>导出 3MF</button>
         </div>
+        <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+          <button style={btnStyle} onClick={() => { void share(); }}>复制分享链接</button>
+        </div>
+        {notice && <p style={{ color: '#2e7d32', fontSize: 12, marginTop: 8, lineHeight: 1.5 }}>{notice}</p>}
         {blocking && (
           <p style={{ color: '#b3261e', fontSize: 12, marginTop: 8, lineHeight: 1.5 }}>
             有阻断级问题，导出已禁用——先按上面的提示改（切阴刻，或把手柄设为「无」后改成 face-up）。
@@ -446,3 +618,80 @@ const violationStyle: React.CSSProperties = {
   lineHeight: 1.5,
   marginBottom: 4,
 };
+
+const cardStyle: React.CSSProperties = {
+  marginTop: 10,
+  padding: '10px 10px 2px',
+  border: '1px solid #e6e2da',
+  borderRadius: 8,
+  background: '#fff',
+};
+
+const miniBtnStyle: React.CSSProperties = {
+  padding: '3px 8px',
+  fontSize: 11,
+  borderRadius: 5,
+  border: '1px solid #e0d8c9',
+  background: '#faf7f1',
+  cursor: 'pointer',
+};
+
+const hintStyle: React.CSSProperties = {
+  fontSize: 11,
+  color: '#a39c91',
+  marginBottom: 8,
+  lineHeight: 1.5,
+};
+
+const checkRowStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 5,
+  fontSize: 12,
+  marginTop: 4,
+  color: '#5a5348',
+};
+
+/**
+ * 图片 → ImageData，长边限制 720px。
+ *
+ * 为什么要缩：描摹的 mm/px 由「物理宽度 / 像素宽」推出来，4000px 的手机照片
+ * 在 18mm 章面上是 0.0045mm/px，marching squares 会产出几十万点，
+ * 直接把 worker 的布尔撑爆。720px 在 40mm 章面上仍有 ~0.055mm/px，比喷嘴细一倍。
+ */
+async function decodeToImageData(file: File, maxSide = 720): Promise<ImageData> {
+  const bitmap = await createImageBitmap(file);
+  const scale = Math.min(1, maxSide / Math.max(bitmap.width, bitmap.height));
+  const w = Math.max(1, Math.round(bitmap.width * scale));
+  const h = Math.max(1, Math.round(bitmap.height * scale));
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('无法创建 2D 画布');
+  ctx.drawImage(bitmap, 0, 0, w, h);
+  bitmap.close();
+  return ctx.getImageData(0, 0, w, h);
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let s = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    s += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  }
+  return btoa(s);
+}
+
+/** 从 `#s=<base64>` 还原 spec；分享链接里没有图像像素，图像图层只剩参数 */
+function specFromHash(): SealSpec | null {
+  const m = /#s=([^&]+)/.exec(location.hash);
+  if (!m) return null;
+  try {
+    const raw = new TextDecoder().decode(
+      Uint8Array.from(atob(m[1]), (c) => c.charCodeAt(0)),
+    );
+    return deserializeSpec(raw);
+  } catch {
+    return null;
+  }
+}

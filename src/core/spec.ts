@@ -93,8 +93,6 @@ export interface ImageLayer {
     mode?: 'silhouette' | 'outline';
     /** outline 模式的线宽（mm），默认 0.6 */
     outlineWidthMm?: number;
-    /** 用户勾选的「照片转黑白」前处理，只影响导入时的像素，不影响描摹参数 */
-    prefilter?: 'none' | 'grayscale' | 'contrast';
   };
   anchor: Anchor;
   transform: Transform;

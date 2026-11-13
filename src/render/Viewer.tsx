@@ -44,10 +44,10 @@ type ViewMode = 'iso' | 'face' | 'back';
 function preset(view: ViewMode, orientation: Orientation): { pos: [number, number, number]; target: [number, number, number] } {
   const faceDown = orientation !== 'face-up';
   if (view === 'face') {
-    return { pos: [0, faceDown ? -52 : 52, 16], target: [0, 2, 0] };
+    return { pos: [0, faceDown ? -70 : 70, 22], target: [0, 2, 0] };
   }
   if (view === 'back') {
-    return { pos: [0, faceDown ? 52 : -52, 16], target: [0, faceDown ? 10 : 2, 0] };
+    return { pos: [0, faceDown ? 70 : -70, 22], target: [0, faceDown ? 10 : 2, 0] };
   }
   return { pos: [48, 42, 62], target: [0, 0, 8] };
 }
@@ -162,7 +162,9 @@ export default function Viewer({ mesh, orientation = 'face-down' }: { mesh: View
       color: 0xd94f4f,
       roughness: 0.55,
       metalness: 0.05,
-      flatShading: false,
+      // 必须平面着色：索引网格的 computeVertexNormals 会把章面大三角和四周立面的法线
+      // 平均到一起，平板上出现整片渐变脏面。印章是机械件，平面着色反而更准。
+      flatShading: true,
     });
     const m = new THREE.Mesh(geo, mat);
     // manifold 用 z 向上，three 默认 y 向上

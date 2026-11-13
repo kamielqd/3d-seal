@@ -50,6 +50,11 @@ export interface BuildResponse {
     /** 可打印性违规（docs/printability.md），不含 auto.fix 记录 */
     violations: Violation[];
   };
+  /**
+   * 参与建模的二维轮廓（**可读、未镜像**，含图像描摹结果），给盖印效果预览用。
+   * 只传点，几个 KB；不然主线程得自己再描摹一遍图像。
+   */
+  previewRings?: Array<{ points: Array<{ x: number; y: number }> }>;
 }
 
 const ctx = self as unknown as DedicatedWorkerGlobalScope;
@@ -98,6 +103,10 @@ ctx.onmessage = async (ev: MessageEvent<BuildRequest>) => {
         status: mesh.status,
         violations: mesh.violations ?? [],
       },
+      previewRings: all.flatMap((p) => [
+        { points: p.outer.map(([x, y]) => ({ x, y })) },
+        ...p.holes.map((h) => ({ points: h.map(([x, y]) => ({ x, y })) })),
+      ]),
     };
     ctx.postMessage(payload, [mesh.vertProperties.buffer, mesh.triVerts.buffer]);
   } catch (err) {
