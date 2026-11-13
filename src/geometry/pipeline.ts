@@ -28,7 +28,7 @@
  */
 
 import type { BodyConfig, PrintConfig, ReliefConfig } from '../core/spec.ts';
-import { getManifold, prepareSectionWithReport } from './crosssection.ts';
+import { fromCrossSection, getManifold, prepareSectionWithReport } from './crosssection.ts';
 import type { ManifoldKit, PrepareReport } from './crosssection.ts';
 import { checkLayerOverlap, checkPrintability } from './printability.ts';
 import type { LayerPolygons, Polygon2D, SolidMesh } from './types.ts';
@@ -117,6 +117,83 @@ function segmentsForCircle(radiusMm: number): number {
 /* 手柄                                                               */
 /* ------------------------------------------------------------------ */
 
+/* ------------------------------------------------------------------ */
+/* 边框                                                                */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 边框环：贴章面内缘的一圈（double 为两圈），深度与图案相同。
+ *
+ * 直接复用章面轮廓做 offset：方章/多边形用 Miter 保持直角，圆章不受影响。
+ * 返回 null 表示「没有边框」或「放不下」（inset 太大、环为空）。
+ *
+ * 边框在 prepareSection 之后才和图案合并（见 buildSeal 第 3b 步），
+ * 否则闭运算会按最小间隙把细边框加粗、或和文字焊成一片。
+ */
+export function borderSection(base: CS, border: BodyConfig['border']): CS | null {
+  if (border.style === 'none') return null;
+  // widthMm 是唯一真值来源，不按 style 做任何隐藏换算；宽度 0 视为没有边框
+  const width = Math.max(0, border.widthMm);
+  if (width <= 0) return null;
+  const inset = Math.max(0, border.insetMm);
+  const segments = segmentsForCircle(width);
+
+  let ring = ringAt(base, inset, width, segments);
+  if (border.style === 'double') {
+    // 双线：间距取边框宽（下限 0.8mm），避免两条线糊在一起
+    const gap = Math.max(0.8, width);
+    const inner = ringAt(base, inset + width + gap, width, segments);
+    if (inner !== null) {
+      if (ring === null) {
+        ring = inner;
+      } else {
+        const merged = ring.add(inner);
+        ring.delete();
+        inner.delete();
+        ring = merged;
+      }
+    }
+  }
+  if (ring !== null && ring.isEmpty()) {
+    ring.delete();
+    return null;
+  }
+  return ring;
+}
+
+/** 在 base 内缩 inset 处取一圈宽 width 的环。 */
+function ringAt(base: CS, insetMm: number, widthMm: number, segments: number): CS | null {
+  const outer = base.offset(-insetMm, 'Miter', 2, segments);
+  if (outer.isEmpty()) {
+    outer.delete();
+    return null;
+  }
+  const inner = outer.offset(-widthMm, 'Miter', 2, segments);
+  const ring = outer.subtract(inner);
+  outer.delete();
+  inner.delete();
+  if (ring.isEmpty()) {
+    ring.delete();
+    return null;
+  }
+  return ring;
+}
+
+/**
+ * 给预览用的边框轮廓：与 buildSeal 实际合并进实体的那圈边框同源同参数，
+ * 避免「模型有边框、盖印预览没有」。返回 mm 坐标；没有边框或放不下时返回 []。
+ */
+export async function borderPolygons(body: BodyConfig): Promise<Polygon2D[]> {
+  const kit = await getManifold();
+  const base = bodySection(kit, body);
+  const ring = borderSection(base, body.border);
+  base.delete();
+  if (ring === null) return [];
+  const polygons = fromCrossSection(kit, ring);
+  ring.delete();
+  return polygons;
+}
+
 /**
  * 手柄：用截面绕 Z 轴旋转（revolve）生成，坐在背面 `bottomZ` 上。
  *
@@ -187,6 +264,7 @@ export async function buildSeal(spec: SealBuildSpec, polygons: readonly Polygon2
 
   // 1) 底板
   const faceSection = bodySection(kit, body);
+  let border: CS | null = borderSection(faceSection, body.border);
   const plateExtruded = faceSection.extrude(thickness);
   faceSection.delete();
   const plate = plateExtruded.translate([0, 0, plateBottom]);
@@ -215,28 +293,47 @@ export async function buildSeal(spec: SealBuildSpec, polygons: readonly Polygon2
     });
     prepared = prep.section;
     prepareReport = prep.report;
+  }
 
-    if (!prepared.isEmpty()) {
-      // 与底板搭接 0.02mm，避免共面布尔退化
-      const overlap = 0.02;
+  // 3b) 边框：和图案同深度，但在 prepareSection 之后才合并。
+  //     原因：闭运算会按「最小间隙」焊缝，若边框一开始就在图案里，细边框会被加粗、
+  //     或与文字焊成一片；边框是形制件，不应被可打印性修正改形。
+  if (border !== null && !border.isEmpty()) {
+    if (prepared === null || prepared.isEmpty()) {
+      prepared?.delete();
+      prepared = border;
+    } else {
+      const merged = prepared.add(border);
+      prepared.delete();
+      border.delete();
+      prepared = merged;
+    }
+    border = null;
+  } else {
+    border?.delete();
+    border = null;
+  }
 
-      if (raised) {
-        // 字母从 z=0 长到 depth+overlap，与底板在 [depth, depth+overlap] 搭接
-        const stamp = prepared.extrude(depth + overlap);
-        const next = solid.add(stamp);
-        solid.delete();
-        stamp.delete();
-        ensureStatus(next, '阳刻并集');
-        solid = next;
-      } else {
-        // 槽从盖印面 z=0 往上挖；刀体向下多出 overlap，避免与 z=0 共面
-        const cutter = prepared.extrude(depth + overlap).translate([0, 0, -overlap]);
-        const next = solid.subtract(cutter);
-        solid.delete();
-        cutter.delete();
-        ensureStatus(next, '阴刻差集');
-        solid = next;
-      }
+  if (prepared !== null && !prepared.isEmpty()) {
+    // 与底板搭接 0.02mm，避免共面布尔退化
+    const overlap = 0.02;
+
+    if (raised) {
+      // 字母/边框从 z=0 长到 depth+overlap，与底板在 [depth, depth+overlap] 搭接
+      const stamp = prepared.extrude(depth + overlap);
+      const next = solid.add(stamp);
+      solid.delete();
+      stamp.delete();
+      ensureStatus(next, '阳刻并集');
+      solid = next;
+    } else {
+      // 槽从盖印面 z=0 往上挖；刀体向下多出 overlap，避免与 z=0 共面
+      const cutter = prepared.extrude(depth + overlap).translate([0, 0, -overlap]);
+      const next = solid.subtract(cutter);
+      solid.delete();
+      cutter.delete();
+      ensureStatus(next, '阴刻差集');
+      solid = next;
     }
   }
 

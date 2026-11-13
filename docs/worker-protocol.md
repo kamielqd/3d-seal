@@ -193,3 +193,9 @@ ImageLayer + ImageData
 - 空结果由 `traceImageData` 抛 `TraceEmptyError`（`code='TRACE_EMPTY'`），`message`/`suggestion` 直接给可执行建议（阈值 ±0.15、反相、去噪面积、换图）。
 - `mode='outline'` 在 placement 里传，实心块转 0.6mm 等宽环；`silhouette` 为默认。
 - 描摹不做最小笔画修正，统一交给 pipeline 的 prepareSection（避免同一份几何被处理两遍）。
+
+### 4.2 边框（预览与实体同源）
+
+- `buildSeal` 内部：`borderSection(base, body.border)` 生成环，在 `prepareSection` 之后与图案合并再挤出。
+- 预览：`await borderPolygons(body) → Polygon2D[]`，与实体使用的是同一个 `borderSection`，**同源同参数**；没有边框或放不下时返回 `[]`。
+- `border.widthMm` 是唯一真值来源，不按 `style` 做隐藏换算；thin/thick 只是 UI 预设宽度（0.8 / 1.6），double 为两圈。

@@ -67,7 +67,12 @@ const baseSpec = createDefaultSpec();
 const thickness = baseSpec.body.baseThicknessMm;
 const depth = baseSpec.relief.depthMm;
 const noHandle = { ...baseSpec, body: { ...baseSpec.body, handle: 'none' as const } };
-const raisedSpec = { ...noHandle, relief: { ...baseSpec.relief, mode: 'raised' as const } };
+// 镜像用例要单独隔离字母：边框环同样落在 [0, depth]，会把 x 包围盒撑满整章
+const raisedSpec = {
+  ...noHandle,
+  body: { ...noHandle.body, border: { ...noHandle.body.border, style: 'none' as const } },
+  relief: { ...baseSpec.relief, mode: 'raised' as const },
+};
 const withHandle = (m: 'raised' | 'engraved') => ({
   ...baseSpec,
   body: { ...baseSpec.body, handle: 'knob' as const },

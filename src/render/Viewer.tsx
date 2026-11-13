@@ -41,26 +41,35 @@ type ViewMode = 'iso' | 'face' | 'back';
  *
  * face 视角故意带一点 +z 偏移（16），避免相机视线与 up 平行导致 lookAt 退化。
  */
-function preset(view: ViewMode, orientation: Orientation): { pos: [number, number, number]; target: [number, number, number] } {
+function preset(
+  view: ViewMode,
+  orientation: Orientation,
+  sizeMm: number,
+): { pos: [number, number, number]; target: [number, number, number] } {
   const faceDown = orientation !== 'face-up';
+  // 相机距离跟章面尺寸绑定：固定距离下 40mm 章会被切边，25mm 章又小得看不清
+  const d = Math.max(70, sizeMm * 2.3);
   if (view === 'face') {
-    return { pos: [0, faceDown ? -70 : 70, 22], target: [0, 2, 0] };
+    return { pos: [0, faceDown ? -d : d, d * 0.34], target: [0, 2, 0] };
   }
   if (view === 'back') {
-    return { pos: [0, faceDown ? 70 : -70, 22], target: [0, faceDown ? 10 : 2, 0] };
+    return { pos: [0, faceDown ? d : -d, d * 0.34], target: [0, faceDown ? 10 : 2, 0] };
   }
-  return { pos: [48, 42, 62], target: [0, 0, 8] };
+  return { pos: [d * 0.72, d * 0.62, d * 0.9], target: [0, 0, 8] };
 }
 
 export default function Viewer({
   mesh,
   orientation = 'face-down',
   minHeight = 420,
+  sizeMm = 30,
 }: {
   mesh: ViewerMesh | null;
   orientation?: Orientation;
   /** 窄屏时传小一点，否则 3D 会把整屏吃掉 */
   minHeight?: number;
+  /** 章面尺寸（mm），用来定相机距离 */
+  sizeMm?: number;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const [view, setView] = useState<ViewMode>('iso');
@@ -149,13 +158,13 @@ export default function Viewer({
   useEffect(() => {
     const s = stateRef.current;
     if (!s) return;
-    const { pos, target } = preset(view, orientation);
+    const { pos, target } = preset(view, orientation, sizeMm);
     s.camera.position.set(pos[0], pos[1], pos[2]);
     s.controls.target.set(target[0], target[1], target[2]);
     s.controls.update();
     // 相机跑到床面以下时，网格会挡在章面前面糊成一片白线；看章面时必须隐藏
     s.grid.visible = pos[1] > 0;
-  }, [view, orientation]);
+  }, [view, orientation, sizeMm]);
 
   // 网格更新
   useEffect(() => {

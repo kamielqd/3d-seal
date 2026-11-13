@@ -5,7 +5,7 @@
  * 放在 Worker 里的原因：布尔、描摹、网格化动辄几百毫秒，主线程会被拖成幻灯片。
  * 文字排版仍在主线程（纯数学 <1ms，要跟手）；这里只吃排好的轮廓。
  */
-import { buildSeal } from '../geometry/pipeline';
+import { buildSeal, borderPolygons } from '../geometry/pipeline';
 import { getManifold } from '../geometry/crosssection';
 import { combinePolygons, traceLayer } from '../geometry/trace';
 import type { Polygon2D } from '../geometry/types';
@@ -92,6 +92,9 @@ ctx.onmessage = async (ev: MessageEvent<BuildRequest>) => {
     }
     const all = combinePolygons(polygons, ...imageGroups);
 
+    // 边框和实体同源（同一个 borderSection），所以预览里也必须有，否则「模型有边框、预览没有」
+    const borderRings = await borderPolygons(spec.body);
+
     stage(id, 'manifold 就绪，开始布尔');
     const mesh = await buildSeal(
       {
@@ -112,10 +115,16 @@ ctx.onmessage = async (ev: MessageEvent<BuildRequest>) => {
         status: mesh.status,
         violations: mesh.violations ?? [],
       },
-      previewRings: all.flatMap((p) => [
-        { points: p.outer.map(([x, y]) => ({ x, y })) },
-        ...p.holes.map((h) => ({ points: h.map(([x, y]) => ({ x, y })) })),
-      ]),
+      previewRings: [
+        ...all.flatMap((p) => [
+          { points: p.outer.map(([x, y]) => ({ x, y })) },
+          ...p.holes.map((h) => ({ points: h.map(([x, y]) => ({ x, y })) })),
+        ]),
+        ...borderRings.flatMap((p) => [
+          { points: p.outer.map(([x, y]) => ({ x, y })) },
+          ...p.holes.map((h) => ({ points: h.map(([x, y]) => ({ x, y })) })),
+        ]),
+      ],
     };
     ctx.postMessage(payload, [mesh.vertProperties.buffer, mesh.triVerts.buffer]);
   } catch (err) {

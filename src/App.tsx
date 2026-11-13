@@ -325,6 +325,49 @@ export default function App() {
           />
         </Field>
 
+        <Field label="边框">
+          <select
+            value={spec.body.border.style}
+            onChange={(e) =>
+              patch((s) => {
+                const style = e.target.value as SealSpec['body']['border']['style'];
+                s.body.border.style = style;
+                // 每种形制的合理默认宽度；宽度是真值，style 不参与换算
+                s.body.border.widthMm =
+                  style === 'none' ? s.body.border.widthMm
+                    : style === 'thin' ? 0.8
+                    : style === 'thick' ? 1.6
+                    : 1.2;
+              })
+            }
+            style={inputStyle}
+          >
+            <option value="none">无边框</option>
+            <option value="thin">单线（细）</option>
+            <option value="thick">单线（粗）</option>
+            <option value="double">双线</option>
+          </select>
+        </Field>
+
+        {spec.body.border.style !== 'none' && (
+          <>
+            <Field label={`边框宽度 ${spec.body.border.widthMm}mm`}>
+              <input
+                type="range" min={0.4} max={3} step={0.1} value={spec.body.border.widthMm}
+                onChange={(e) => patch((s) => { s.body.border.widthMm = Number(e.target.value); })}
+                style={{ width: '100%' }}
+              />
+            </Field>
+            <Field label={`边框内缩 ${spec.body.border.insetMm}mm`}>
+              <input
+                type="range" min={0.3} max={5} step={0.1} value={spec.body.border.insetMm}
+                onChange={(e) => patch((s) => { s.body.border.insetMm = Number(e.target.value); })}
+                style={{ width: '100%' }}
+              />
+            </Field>
+          </>
+        )}
+
         <Field label="浮雕">
           <select
             value={spec.relief.mode}

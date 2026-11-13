@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 内置预设模板。
  *
  * 每条预设都按「FDM 能直接打」来配：阴刻 + 盖印面贴床 + 圆钮手柄，
@@ -40,7 +40,7 @@ export const PRESETS: Preset[] = [
     build: () => {
       const spec = base();
       spec.body.shape = 'square';
-      spec.body.sizeMm = 25;
+      spec.body.sizeMm = 28;
       spec.body.cornerRadiusMm = 1.5;
       spec.body.baseThicknessMm = 2.5;
       spec.body.border = { style: 'thin', widthMm: 1, insetMm: 1.2 };
@@ -53,8 +53,8 @@ export const PRESETS: Preset[] = [
       if (t && t.kind === 'text') {
         t.text = '张三';
         t.layout = 'vertical';
-        t.fontSizeMm = 8;
-        t.letterSpacingMm = 1;
+        t.fontSizeMm = 10;
+        t.letterSpacingMm = 1.5;
       }
       return spec;
     },
@@ -66,7 +66,7 @@ export const PRESETS: Preset[] = [
     build: () => {
       const spec = base();
       spec.body.shape = 'square';
-      spec.body.sizeMm = 30;
+      spec.body.sizeMm = 40;
       spec.body.cornerRadiusMm = 2;
       spec.body.border = { style: 'double', widthMm: 1.2, insetMm: 1.5 };
       spec.body.handle = 'knob';
@@ -76,7 +76,7 @@ export const PRESETS: Preset[] = [
       if (t && t.kind === 'text') {
         t.text = '平安喜乐';
         t.layout = 'horizontal';
-        t.fontSizeMm = 6.5;
+        t.fontSizeMm = 7;
         t.letterSpacingMm = 1.2;
       }
       return spec;
@@ -89,7 +89,7 @@ export const PRESETS: Preset[] = [
     build: () => {
       const spec = base();
       spec.body.shape = 'square';
-      spec.body.sizeMm = 32;
+      spec.body.sizeMm = 40;
       spec.body.cornerRadiusMm = 1;
       spec.body.border = { style: 'thick', widthMm: 1.6, insetMm: 1.2 };
       spec.body.handle = 'knob';
@@ -99,7 +99,7 @@ export const PRESETS: Preset[] = [
       if (t && t.kind === 'text') {
         t.text = '藏书之印';
         t.layout = 'huiwen';
-        t.fontSizeMm = 7;
+        t.fontSizeMm = 8;
         t.letterSpacingMm = 0.8;
       }
       return spec;
@@ -120,10 +120,11 @@ export const PRESETS: Preset[] = [
       spec.relief.depthMm = 1.2;
       const t = spec.layers.find((l) => l.kind === 'text');
       if (t && t.kind === 'text') {
-        t.text = '吉祥如意万事顺';
+        t.fontId = 'source-han-sans';
+        t.text = '吉祥如意';
         t.layout = 'ring';
-        t.fontSizeMm = 6;
-        t.letterSpacingMm = 1;
+        t.fontSizeMm = 7;
+        t.letterSpacingMm = 1.2;
         t.ringSpanDeg = 360;
       }
       return spec;
