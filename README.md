@@ -4,7 +4,7 @@
 
 没有后端，不上传任何东西——字体、图片、几何计算全在本机浏览器里完成。
 
-线上地址：**https://kamielqd.github.io/3d-seal/**
+线上地址：**暂未发布**。准备完成后 `npm run build && npm run deploy` 即可发到 https://kamielqd.github.io/3d-seal/ （Pages 源设为 `gh-pages` 分支根目录）。
 
 ## 能做什么
 
