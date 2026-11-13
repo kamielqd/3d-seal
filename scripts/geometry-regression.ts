@@ -23,6 +23,7 @@ import type { ManifoldKit } from '../src/geometry/crosssection.ts';
 import { measureMinStrokeRaster } from '../src/geometry/raster.ts';
 import { repairSelfIntersections } from '../src/geometry/polygon.ts';
 import { checkPrintability } from '../src/geometry/printability.ts';
+import type { AutoFitInput } from '../src/geometry/printability.ts';
 import { lastBuildStats } from '../src/geometry/pipeline.ts';
 import { SealGeometryError } from '../src/geometry/types.ts';
 import type { Contour, Polygon2D, SolidMesh, Vec2 } from '../src/geometry/types.ts';
@@ -216,6 +217,61 @@ check(
   noteNone?.message ?? '无',
 );
 noteSection.delete();
+
+/* ---------- 4d. 多文字层 autoFit：单层逐字节不变、多层点名/合并 ---------- */
+{
+  const fitSection = await sectionFromPolygons(bars);
+  const fitMsg = (autoFit: AutoFitInput): string =>
+    checkPrintability({
+      section: fitSection,
+      solid: null,
+      body: spec.body,
+      relief: spec.relief,
+      print: spec.print,
+      autoFit,
+    }).find((v) => v.rule === 'ridge.min')?.message ?? '';
+
+  const fitA = { layerId: 't_1', requestedFontMm: 7, effectiveFontMm: 4.2, fitted: true };
+  const noA = { layerId: 't_1', requestedFontMm: 7, effectiveFontMm: 7, fitted: false };
+  const noB = { layerId: 't_2', requestedFontMm: 6, effectiveFontMm: 6, fitted: false };
+
+  // 单层：文案必须和旧版一模一样（lab 的断言按原文案写死）
+  const legacy = fitMsg(fitA);
+  check(
+    legacy.includes('（已自动把字号从 7mm 缩到 4.2mm：字太多塞不下章面，不是你设小了）'),
+    'autoFit 单值：文案与旧版一致',
+    legacy.slice(-60),
+  );
+  check(fitMsg([fitA]) === legacy, 'autoFit 单元素数组：与单值逐字节一致', '');
+  check(!fitMsg(null).includes('已自动') && !fitMsg(undefined).includes('已自动'), 'autoFit 为空：不输出副语', '');
+  check(!fitMsg([noA, noB]).includes('已自动'), 'autoFit 一层都没缩：不输出副语', '');
+
+  // 两层都缩：合并成一句，两层都点名，不重复同一句话
+  const fitB = { layerId: 't_2', requestedFontMm: 6, effectiveFontMm: 5.2, fitted: true };
+  const multi = fitMsg([fitA, fitB]);
+  check(
+    multi.includes('已自动缩小 2 个文字层') &&
+      multi.includes('文字 1 从 7mm 缩到 4.2mm') &&
+      multi.includes('文字 2 从 6mm 缩到 5.2mm'),
+    '多文字层都缩过：合并成一句且两层都点名',
+    multi,
+  );
+  check((multi.match(/已自动/g) ?? []).length === 1, '多文字层：同一句话不重复 N 遍', String((multi.match(/已自动/g) ?? []).length));
+
+  // 只有第二层缩：必须点名「文字 2」，不能把第一层也算进去
+  const oneOfTwo = fitMsg([noA, fitB]);
+  check(
+    oneOfTwo.includes('「文字 2」') && !oneOfTwo.includes('文字 1'),
+    '多文字层只缩一层：点名是哪层',
+    oneOfTwo,
+  );
+
+  // 建议：只要有一层缩过就砍掉「或放大字号」，一层没缩就保留
+  check(!oneOfTwo.includes('或放大字号'), '有层缩过：建议里不再出现「或放大字号」', '');
+  check(fitMsg([noA, noB]).includes('或放大字号'), '没有层缩过：保留「或放大字号」', '');
+
+  fitSection.delete();
+}
 
 /* ---------- 5. 「回」：两层环，孔不能填实 ---------- */
 const huiPolys: Polygon2D[] = [

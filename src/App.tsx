@@ -143,6 +143,16 @@ export default function App() {
         };
         paintInk(flat);
         const polygons = fromLayoutPolygons(flat);
+        // 按图层分组：worker 要把文字层之间的重叠也查出来（合并成一组就没有「两层」可言了）
+        const byLayer = new Map<string, typeof flat>();
+        for (const p of flat) {
+          if (!p.layerId) continue;
+          const list = byLayer.get(p.layerId);
+          if (list) list.push(p);
+          else byLayer.set(p.layerId, [p]);
+        }
+        const polygonsByLayer: Record<string, ReturnType<typeof fromLayoutPolygons>> = {};
+        for (const [layerId, rings] of byLayer) polygonsByLayer[layerId] = fromLayoutPolygons(rings);
         const images: Record<string, ImagePayload> = {};
         for (const l of spec.layers) {
           if (l.kind !== 'image') continue;
@@ -162,9 +172,11 @@ export default function App() {
             id,
             spec: { body: spec.body, relief: spec.relief, print: spec.print, layers: spec.layers },
             polygons,
+            polygonsByLayer,
             images,
-            // 自动适应章面的结果：几何侧据此把文案从「建议放大字号」换成「系统替你缩过」
-            autoFit: layerFits[0],
+            // 自动适应章面的结果（整组）：几何侧据此把文案从「建议放大字号」换成
+            // 「系统替你缩过」，多层时还会点名是「文字 2」被缩
+            autoFit: layerFits,
           });
           // 兜底：几何引擎初始化失败时不会回消息，不能一直转圈
           setTimeout(() => {

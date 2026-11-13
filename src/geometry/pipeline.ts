@@ -51,10 +51,12 @@ export interface SealBuildSpec {
   /** 不填按 face-down。face-up 只在 handle === 'none' 时允许。 */
   orientation?: SealOrientation;
   /**
-   * 文字图层自动适应章面的结果（`layoutFlatWithFit()` 的 `fits[0]`）。
-   * 用来让校验文案区分「用户把字号设小了」和「系统替他缩了」——后者不能建议放大字号。
+   * 文字图层自动适应章面的结果（`layoutFlatWithFit()` 的 `fits`）。
+   * 单文字层可以只传那一条（旧调用方），多文字层要传整个数组——
+   * 否则文案只会认第一层。用来让校验文案区分「用户把字号设小了」和
+   * 「系统替他缩了」——后者不能建议放大字号。
    */
-  autoFit?: LayerFit | null;
+  autoFit?: LayerFit | readonly LayerFit[] | null;
   /**
    * 可选：按图层拆开的多边形。传入才会做「同深度重叠」检测；
    * 几何本身只吃合并后的 polygons，不依赖它。

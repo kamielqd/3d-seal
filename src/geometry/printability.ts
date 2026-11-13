@@ -59,6 +59,15 @@ export interface Violation {
   highlight?: ViolationHighlight;
 }
 
+/**
+ * 自动适应结果：单个（旧调用方）或整组（多文字层）。
+ *
+ * `layoutFlatWithFit()` 现在返回 `fits: LayerFit[]`——每个非空文字层一条，
+ * 顺序与图层顺序一致（含 `fitted: false` 的层）。这里两种都要吃：
+ * 前端还没改成传数组时是单值，改了之后是数组，中间态不能崩。
+ */
+export type AutoFitInput = LayerFit | readonly LayerFit[] | null | undefined;
+
 export interface PrintabilityInput {
   /** 已 prepareSection 的二维图案；没有图案时为 null。 */
   section: CS | null;
@@ -70,10 +79,11 @@ export interface PrintabilityInput {
   /** prepareSection 的加工记录，用于解释「已自动合并/加粗」。 */
   prepare?: PrepareReport | null;
   /**
-   * 文字图层自动适应章面的结果（`layoutFlatWithFit()` 给的那条）。
-   * 有 `fitted: true` 时说明系统已经替用户缩过字号，文案不能再建议「放大字号」。
+   * 文字图层自动适应章面的结果（`layoutFlatWithFit()` 给的那组）。
+   * 有 `fitted: true` 的层说明系统已经替用户缩过字号，文案不能再建议「放大字号」，
+   * 而且要说得清是**哪一层**缩了——多文字层时不能只报第一层。
    */
-  autoFit?: LayerFit | null;
+  autoFit?: AutoFitInput;
 }
 
 interface Preset {
@@ -131,15 +141,50 @@ const WELD_RATIO_LIMIT = 0.05;
  *
  * 自动适应章面之后，系统已经替用户缩过字号了。这时候任何「放大字号」的建议都是
  * 自相矛盾的——用户会以为是自己设小了。fitted 为 true 时必须说清是系统缩的。
+ *
+ * 多文字层：
+ *   - 只缩了一层 → 文案要点名是哪层（`文字 N`，N 按 `fits` 顺序 = 图层顺序）
+ *   - 缩了多层   → 合并成一句，不要把同一句话重复 N 遍
+ *   - 总共就一层 → **必须与旧版逐字节一致**（lab 的断言按原文案写死）
  */
-function fitNote(autoFit: LayerFit | null | undefined): string {
-  if (autoFit === null || autoFit === undefined || autoFit.fitted !== true) return '';
-  return `（已自动把字号从 ${round2(autoFit.requestedFontMm)}mm 缩到 ${round2(autoFit.effectiveFontMm)}mm：字太多塞不下章面，不是你设小了）`;
+function fitNote(autoFit: AutoFitInput): string {
+  const all = fitList(autoFit);
+  const fitted = all.map((fit, index) => ({ fit, index })).filter((entry) => entry.fit.fitted === true);
+  if (fitted.length === 0) return '';
+
+  const first = fitted[0]!;
+  if (all.length <= 1) {
+    return `（已自动把字号从 ${round2(first.fit.requestedFontMm)}mm 缩到 ${round2(first.fit.effectiveFontMm)}mm：字太多塞不下章面，不是你设小了）`;
+  }
+  if (fitted.length === 1) {
+    return `（已自动把「${fitLayerLabel(first.index)}」的字号从 ${round2(first.fit.requestedFontMm)}mm 缩到 ${round2(first.fit.effectiveFontMm)}mm：那层字太多塞不下章面，不是你设小了）`;
+  }
+  const parts = fitted
+    .map(
+      ({ fit, index }) =>
+        `${fitLayerLabel(index)} 从 ${round2(fit.requestedFontMm)}mm 缩到 ${round2(fit.effectiveFontMm)}mm`,
+    )
+    .join('，');
+  return `（已自动缩小 ${fitted.length} 个文字层：${parts}；字太多塞不下章面，不是你设小了）`;
+}
+
+/**
+ * 图层称呼。索引就是 `layoutFlatWithFit().fits` 里的位置——和面板上「文字 N」同序。
+ * 不拿 layerId 拼文案：那是 `t_ab12` 这种随机串，用户认不出来。
+ */
+function fitLayerLabel(index: number): string {
+  return `文字 ${index + 1}`;
+}
+
+/** autoFit 既可能是单个（旧）也可能是整组（多文字层），统一成数组。 */
+function fitList(autoFit: AutoFitInput): LayerFit[] {
+  if (autoFit === null || autoFit === undefined) return [];
+  return Array.isArray(autoFit) ? (autoFit as readonly LayerFit[]).slice() : [autoFit as LayerFit];
 }
 
 /** 自动缩过字号后，建议里的「放大字号」要砍掉（上面的 fitNote 已经解释了原因）。 */
-function fitAwareAdvice(autoFit: LayerFit | null | undefined, advice: string): string {
-  if (autoFit === null || autoFit === undefined || autoFit.fitted !== true) return advice;
+function fitAwareAdvice(autoFit: AutoFitInput, advice: string): string {
+  if (!fitList(autoFit).some((fit) => fit.fitted === true)) return advice;
   return advice.replace('或放大字号', '');
 }
 

@@ -13,6 +13,11 @@ import type { Polygon2D as GeomPolygon } from '../geometry/types.ts';
 
 export interface LayoutPolygon {
   points: { x: number; y: number }[];
+  /**
+   * 这圈轮廓属于哪个图层。几何侧要按层做重叠/出界诊断时靠它分组；
+   * 2D 渲染不需要，可忽略。
+   */
+  layerId?: string;
 }
 
 /** anchor(-1~1) → 章面内坐标系(mm) */
@@ -211,7 +216,8 @@ export async function layoutFlatWithFit(
     if (layer.kind !== 'text') continue;
     if (!layer.text.trim()) continue;
     const { polygons: polys, fit } = await layoutTextWithFit(layer, spec);
-    polygons.push(...polys);
+    // 打上图层 id：worker 按它分组，文字图层之间的重叠才检得出来
+    polygons.push(...polys.map((p) => ({ ...p, layerId: layer.id })));
     fits.push(fit);
   }
   return { polygons, fits };

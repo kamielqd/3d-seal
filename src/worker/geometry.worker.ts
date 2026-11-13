@@ -26,10 +26,15 @@ export interface BuildRequest {
   id: number;
   spec: SealBuildSpec & { layers?: Layer[] };
   polygons: Polygon2D[];
+  /**
+   * 按文字图层 id 分组的轮廓。给了就用它分组做重叠/出界诊断；
+   * 不给（旧调用方）则所有文字算一组，文字层之间的重叠查不出来。
+   */
+  polygonsByLayer?: Record<string, Polygon2D[]>;
   /** 按图层 id 索引的位图；没有像素的图像图层会被跳过（例如从分享链接打开） */
   images?: Record<string, ImagePayload>;
-  /** 文字图层自动适应章面的结果；没有或 null 表示没缩过 */
-  autoFit?: LayerFit | null;
+  /** 文字图层自动适应章面的结果；没有或 null 表示没缩过。多层时传整组 */
+  autoFit?: LayerFit | readonly LayerFit[] | null;
 }
 
 export interface BuildProgress {
@@ -71,7 +76,7 @@ function stage(id: number, s: string): void {
 }
 
 ctx.onmessage = async (ev: MessageEvent<BuildRequest>) => {
-  const { id, spec, polygons, images, autoFit } = ev.data;
+  const { id, spec, polygons, polygonsByLayer, images, autoFit } = ev.data;
   try {
     stage(id, '初始化 manifold');
     await getManifold();
@@ -79,7 +84,15 @@ ctx.onmessage = async (ev: MessageEvent<BuildRequest>) => {
     // 图像图层：位图 → 轮廓，和文字轮廓扁平拼接（真正的并集在 prepareSection 里一次做）
     const imageGroups: Polygon2D[][] = [];
     const layerGroups: Array<{ id: string; kind: 'text' | 'image'; polygons: Polygon2D[] }> = [];
-    if (polygons.length > 0) {
+    // 文字图层按层分组：合并成一组的话「两层文字压在一起」既不会报重叠、也没法按层量出界
+    const textGroups = polygonsByLayer
+      ? Object.entries(polygonsByLayer).filter(([, polys]) => polys.length > 0)
+      : [];
+    if (textGroups.length > 0) {
+      for (const [layerId, polys] of textGroups) {
+        layerGroups.push({ id: layerId, kind: 'text', polygons: polys });
+      }
+    } else if (polygons.length > 0) {
       layerGroups.push({ id: 'text', kind: 'text', polygons });
     }
     for (const layer of spec.layers ?? []) {
