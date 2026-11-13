@@ -43,18 +43,44 @@ interface Case {
   spec: SealSpec;
 }
 
-const CASES: Case[] = [
-  { id: 'four-30-engraved', label: '四字 / 30mm / 阴刻 / 字号7', spec: makeSpec(TEXT, 30, 'engraved') },
-  { id: 'two-30-engraved', label: '两字 / 30mm / 阴刻 / 字号7', spec: makeSpec('印章', 30, 'engraved') },
-  { id: 'four-40-engraved', label: '四字 / 40mm / 阴刻 / 字号7', spec: makeSpec(TEXT, 40, 'engraved') },
-  { id: 'two-30-font12', label: '两字 / 30mm / 阴刻 / 字号12', spec: makeSpec('印章', 30, 'engraved', 12) },
-  { id: 'four-30-raised', label: '四字 / 30mm / 阳刻 / 字号7', spec: makeSpec(TEXT, 30, 'raised') },
+interface CaseDef {
+  id: string;
+  text: string;
+  sizeMm: number;
+  mode: 'raised' | 'engraved';
+  fontSizeMm?: number;
+  /** 额外的括号说明，比如「自动适应」。 */
+  suffix?: string;
+}
+
+/**
+ * 用例定义：**label 一律从输入算出来，不手写**。
+ *
+ * 曾经手写成「七字」，字串却是 6 个字（'印章工坊印鉴'），量出 4.88mm 和真机
+ * 4.21mm 对不上，白折腾一轮。凡是能从未知输入算出来的，都不要手写。
+ */
+const CASE_DEFS: CaseDef[] = [
+  { id: 'four-30-engraved', text: TEXT, sizeMm: 30, mode: 'engraved' },
+  { id: 'two-30-engraved', text: '印章', sizeMm: 30, mode: 'engraved' },
+  { id: 'four-40-engraved', text: TEXT, sizeMm: 40, mode: 'engraved' },
+  { id: 'two-30-font12', text: '印章', sizeMm: 30, mode: 'engraved', fontSizeMm: 12 },
+  { id: 'four-30-raised', text: TEXT, sizeMm: 30, mode: 'raised' },
   // 焊接比例的另一端：章面挤、字号小，字形必然糊在一起
-  { id: 'six-25-engraved', label: '六字 / 25mm / 阴刻 / 字号3.5', spec: makeSpec('印章工坊印鉴', 25, 'engraved', 3.5) },
-  { id: 'four-20-engraved', label: '四字 / 20mm / 阴刻 / 字号4.5', spec: makeSpec(TEXT, 20, 'engraved', 4.5) },
-  // 文字自动适应章面：7 字 7mm 会被等比缩到 ~4.2mm，规则文案必须承认「是系统缩的」
-  { id: 'seven-30-autofit', label: '七字 / 30mm / 阴刻 / 字号7（自动适应）', spec: makeSpec('印章工坊印鉴', 30, 'engraved', 7) },
+  { id: 'six-25-engraved', text: '印章工坊印鉴', sizeMm: 25, mode: 'engraved', fontSizeMm: 3.5 },
+  { id: 'four-20-engraved', text: TEXT, sizeMm: 20, mode: 'engraved', fontSizeMm: 4.5 },
+  // 文字自动适应章面：7 个字 7mm 会被等比缩到 ~4mm
+  { id: 'seven-30-autofit', text: '印章工坊印鉴藏', sizeMm: 30, mode: 'engraved', suffix: '（自动适应）' },
 ];
+
+const CASES: Case[] = CASE_DEFS.map((def) => {
+  const fontSizeMm = def.fontSizeMm ?? 7;
+  const modeLabel = def.mode === 'engraved' ? '阴刻' : '阳刻';
+  return {
+    id: def.id,
+    label: `${def.text.length}字 / ${def.sizeMm}mm / ${modeLabel} / 字号${fontSizeMm}${def.suffix ?? ''}`,
+    spec: makeSpec(def.text, def.sizeMm, def.mode, fontSizeMm),
+  };
+});
 
 interface CaseResult {
   id: string;
@@ -77,6 +103,10 @@ interface CaseResult {
   weld: { weldedMm2: number; areaBeforeMm2: number; ratioPercent: number; gapBeforeMm: number | null };
   /** prepareSection 的整体外扩量（笔画不足时会被自动加粗）。 */
   thickenedMm: number;
+  /** 文字排完后的 XY 半宽（max(|x|,|y|)），用来验 clearance。 */
+  textHalfExtentMm: number;
+  /** 边框内沿的半宽（章面半宽 − 内缩 − 线宽）。 */
+  borderInnerMm: number;
   /** 文字自动适应章面的结果。 */
   fit: { requestedFontMm: number; effectiveFontMm: number; fitted: boolean } | null;
 }
@@ -155,6 +185,19 @@ async function run(): Promise<void> {
       infos: violations.filter((v) => v.severity === 'info').length,
       errors: violations.filter((v) => v.severity === 'error').length,
       ...(await diagnose(testCase.spec, polygons)),
+      textHalfExtentMm: (() => {
+        let extent = 0;
+        for (const polygon of polygons) {
+          for (const ring of [polygon.outer, ...polygon.holes]) {
+            for (const [x, y] of ring) {
+              extent = Math.max(extent, Math.abs(x), Math.abs(y));
+            }
+          }
+        }
+        return extent;
+      })(),
+      borderInnerMm:
+        testCase.spec.body.sizeMm / 2 - testCase.spec.body.border.insetMm - testCase.spec.body.border.widthMm,
       fit:
         autoFit === null
           ? null
@@ -299,6 +342,20 @@ async function run(): Promise<void> {
       name: '四字（没缩过）：文案里不出现「已自动把字号」',
       ok: (four30?.violations ?? []).every((v) => !v.message.includes('已自动把字号')),
       detail: ridge?.message.slice(0, 40) ?? '无',
+    },
+    {
+      name: 'clearance：所有 fitted=true 的用例，文字到边框内沿 ≥ 0.35mm',
+      // 最小间隙量不出 clearance（它被字内/字间缝主导），只能直接量几何距离。
+      // 这条守住 fitBoxMm 的留边：谁把 margin 改小了，这里立刻红。
+      ok: results.every((run) => {
+        if (run.fit?.fitted !== true) return true;
+        return run.borderInnerMm - run.textHalfExtentMm >= 0.35;
+      }),
+      detail:
+        results
+          .filter((run) => run.fit?.fitted === true)
+          .map((run) => `${run.label}：${run.borderInnerMm.toFixed(2)} − ${run.textHalfExtentMm.toFixed(2)} = ${(run.borderInnerMm - run.textHalfExtentMm).toFixed(2)}mm`)
+          .join(' | ') || '无 fitted 用例',
     },
   ];
 
