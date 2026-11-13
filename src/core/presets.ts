@@ -134,6 +134,9 @@ export const PRESETS: Preset[] = [
     note: '无手柄 + 背面贴床（face-up）：阳刻唯一能不靠支撑打出来的组合',
     build: () => {
       const spec = base();
+      // 必须显式落在测试片上：默认 styleId 是 classic（内置实心模型），
+      // 外部主体强制 face-down，阳刻会整片面朝下悬空、被 bridge.span 挡住导出。
+      spec.body.styleId = 'plate';
       spec.body.shape = 'square';
       spec.body.sizeMm = 30;
       spec.body.cornerRadiusMm = 1.5;

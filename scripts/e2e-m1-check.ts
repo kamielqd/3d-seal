@@ -6,9 +6,9 @@
  *  1. 默认（阴刻 + 面贴床）buildSeal status 必须 NoError，且三角面 > 0
  *  2. z 约定：阴刻贴床时 z=0 是盖印面；阳刻贴床时字母在 [0, depth]
  *  3. 镜像正确：把图案整体放在 +x，实体上的图案必须出现在 -x
- *  4. 阳刻 + FDM + 有手柄 → bridge.span 必须是 error 级（阻断导出）
- *  5. face-up：无手柄可打、z 最小值精确 0、总高 = depth + T；有手柄直接抛错
- *  6. 三种章体 + 两种手柄都能出
+ *  4. 阳刻 + FDM → bridge.span 必须是 error 级（阻断导出）；阴刻不阻断
+ *  5. face-up：阳刻可打、z 最小值精确 0、总高 = depth + T；阴刻直接抛 FaceUpRequiresRaised
+ *  6. 三种章形都能出；**手柄已从产品删除**，`handle: 'knob'` 不得再长出旋钮
  *  7. STL 字节数 = 84 + 50n，头部三角数一致
  *  8. 3MF 能解压、unit="millimeter"、三角数一致、**只有一个 object**
  */
@@ -22,7 +22,15 @@ import { fromLayoutPolygons } from '../src/core/polygon-bridge.ts';
 import { toBinaryStl } from '../src/export/stl.ts';
 import { to3mf } from '../src/export/threemf.ts';
 import { createDefaultSpec } from '../src/core/spec.ts';
+import { setBodyReader } from '../src/geometry/body-library.ts';
+import { SealGeometryError } from '../src/geometry/types.ts';
 import type { SolidMesh } from '../src/geometry/types.ts';
+
+// Node 下没有浏览器 fetch，内置主体直接读 public/bodies（浏览器里走 body-library 的 fetch）
+setBodyReader(async (style) => {
+  const buffer = fs.readFileSync(new URL(`../public/bodies/${style.file}`, import.meta.url));
+  return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
+});
 
 const fontPath = 'public/fonts/smiley-sans/smiley-sans-subset.ttf';
 const fbuf = fs.readFileSync(fontPath);
@@ -63,19 +71,23 @@ function meshXInZ(mesh: SolidMesh, zMin: number, zMax: number) {
   return { minX, maxX };
 }
 
-const baseSpec = createDefaultSpec();
+// 这组用例验的是参数化底板（plate）的 z 约定/镜像，与内置主体路径分开。
+// 默认 spec 现在指向 classic 模型，这里显式切回 plate，免得断言被模型高度带跑。
+const e2eDefault = createDefaultSpec();
+const baseSpec = {
+  ...e2eDefault,
+  body: { ...e2eDefault.body, styleId: 'plate' as const, shape: 'square' as const, handle: 'none' as const },
+};
 const thickness = baseSpec.body.baseThicknessMm;
 const depth = baseSpec.relief.depthMm;
-const noHandle = { ...baseSpec, body: { ...baseSpec.body, handle: 'none' as const } };
 // 镜像用例要单独隔离字母：边框环同样落在 [0, depth]，会把 x 包围盒撑满整章
 const raisedSpec = {
-  ...noHandle,
-  body: { ...noHandle.body, border: { ...noHandle.body.border, style: 'none' as const } },
+  ...baseSpec,
+  body: { ...baseSpec.body, border: { ...baseSpec.body.border, style: 'none' as const } },
   relief: { ...baseSpec.relief, mode: 'raised' as const },
 };
-const withHandle = (m: 'raised' | 'engraved') => ({
+const reliefSpec = (m: 'raised' | 'engraved') => ({
   ...baseSpec,
-  body: { ...baseSpec.body, handle: 'knob' as const },
   relief: { ...baseSpec.relief, mode: m },
 });
 
@@ -90,7 +102,12 @@ check(mesh.status === 'NoError', `默认（阴刻）status=${mesh.status}`, `${m
 check(mesh.triangleCount > 0 && mesh.triangleCount < 150000, '三角面在 (0, 15万) 内', String(mesh.triangleCount));
 const zAll = meshZ(mesh);
 check(Math.abs(zAll.min) < 1e-6, '阴刻面贴床：z 最小值精确为 0', zAll.min.toFixed(6));
-check(zAll.max > thickness, '阴刻：手柄/章体高于底板', `z max=${zAll.max.toFixed(2)}`);
+// 阴刻：章面就是底板面，总高必须正好等于板厚——多出来就说明又有手柄长出来了
+check(
+  Math.abs(zAll.max - thickness) < 1e-6,
+  '阴刻：总高 = 板厚（没有手柄）',
+  `z max=${zAll.max.toFixed(2)} vs 板厚 ${thickness}`,
+);
 
 /* ---------- 2. 阳刻 z 约定：字母在 [0, depth] ---------- */
 const raisedMesh = await buildSeal(raisedSpec, fromLayoutPolygons(layout('印', 9, 5, 0)));
@@ -111,13 +128,13 @@ check(
 );
 
 /* ---------- 4. bridge.span 分级 ---------- */
-const raisedWithHandle = await buildSeal(withHandle('raised'), fromLayoutPolygons(layout('印章工坊', 9)));
-const bridgeErr = (raisedWithHandle.violations ?? []).filter((v) => v.rule === 'bridge.span' && v.severity === 'error');
-check(bridgeErr.length === 1, '阳刻+手柄 → bridge.span 为 error 级', bridgeErr[0]?.message.slice(0, 40) ?? '缺失');
+const raisedBridgeMesh = await buildSeal(reliefSpec('raised'), fromLayoutPolygons(layout('印章工坊', 9)));
+const bridgeErr = (raisedBridgeMesh.violations ?? []).filter((v) => v.rule === 'bridge.span' && v.severity === 'error');
+check(bridgeErr.length === 1, '阳刻 + FDM 贴床 → bridge.span 为 error 级', bridgeErr[0]?.message.slice(0, 40) ?? '缺失');
 
-const engravedWithHandle = await buildSeal(withHandle('engraved'), fromLayoutPolygons(layout('印章工坊', 9)));
-const engravedBridge = (engravedWithHandle.violations ?? []).filter((v) => v.rule === 'bridge.span');
-check(engravedBridge.every((v) => v.severity !== 'error'), '阴刻+手柄 → 不产生阻断级 bridge.span', String(engravedBridge.length));
+const engravedBridgeMesh = await buildSeal(reliefSpec('engraved'), fromLayoutPolygons(layout('印章工坊', 9)));
+const engravedBridge = (engravedBridgeMesh.violations ?? []).filter((v) => v.rule === 'bridge.span');
+check(engravedBridge.every((v) => v.severity !== 'error'), '阴刻 → 不产生阻断级 bridge.span', String(engravedBridge.length));
 
 /* ---------- 5. face-up ---------- */
 const faceUpMesh = await buildSeal(
@@ -132,21 +149,19 @@ check(
   `${zUp.max.toFixed(2)} vs ${(depth + thickness).toFixed(2)}`,
 );
 
-let faceUpThrew = false;
+let faceUpStatus = '';
 try {
-  await buildSeal({ ...withHandle('raised'), orientation: 'face-up' }, fromLayoutPolygons(layout('印', 9)));
-} catch {
-  faceUpThrew = true;
+  await buildSeal({ ...reliefSpec('engraved'), orientation: 'face-up' }, fromLayoutPolygons(layout('印', 9)));
+} catch (error) {
+  faceUpStatus = error instanceof SealGeometryError ? error.status : 'unknown';
 }
-check(faceUpThrew, 'face-up + 有手柄 → 直接抛错，不产出半成品');
+check(faceUpStatus === 'FaceUpRequiresRaised', 'face-up + 阴刻 → 抛 FaceUpRequiresRaised', faceUpStatus || '未抛错');
 
-/* ---------- 6. 章体与手柄 ---------- */
+/* ---------- 6. 章形（手柄已从产品删除） ---------- */
 const shapes: Array<[string, Record<string, unknown>]> = [
   ['圆章（阴刻）', { shape: 'circle' }],
   ['正八边形（阴刻）', { shape: 'polygon', sides: 8 }],
   ['方章圆角（阴刻）', { shape: 'square', cornerRadiusMm: 3 }],
-  ['方章+旋钮手柄（阴刻）', { shape: 'square', handle: 'knob' }],
-  ['方章+桥形手柄（阴刻）', { shape: 'square', handle: 'bridge' }],
 ];
 for (const [label, patch] of shapes) {
   const spec = { ...baseSpec, body: { ...baseSpec.body, ...patch } };
@@ -157,6 +172,19 @@ for (const [label, patch] of shapes) {
   } catch (e) {
     check(false, `${label} 生成`, e instanceof Error ? e.message : String(e));
   }
+}
+
+// 手柄字段只为旧链接保留，不能再参与生成：默认 spec 里 handle 是 'knob'，
+// 测试片要是照它长出旋钮，「3mm 测试片」这条验收就不成立了。
+{
+  const legacy = { ...baseSpec, body: { ...baseSpec.body, handle: 'knob' as const } };
+  const m = await buildSeal(legacy, fromLayoutPolygons(layout('印章工坊', 9)));
+  const z = meshZ(m);
+  check(
+    Math.abs(z.max - thickness) < 1e-6,
+    '手柄字段被忽略：测试片总高仍 = 板厚（不悄悄长旋钮）',
+    `z max=${z.max.toFixed(2)}（板厚 ${thickness}）`,
+  );
 }
 
 /* ---------- 7. STL ---------- */

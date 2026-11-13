@@ -383,8 +383,8 @@ export default function App() {
               用内置主体：{libStyleDef?.name}
             </div>
             <div style={{ lineHeight: 1.5, opacity: 0.85 }}>
-              形制由模型自带，章型 / 边框不可调；章面尺寸决定整体等比缩放。平面朝下当刻印面，
-              只能阴刻。
+              形制由模型自带，章型不可调；边框是叠加在章面上的环形槽（阳刻为凸筋），可以加。
+              章面尺寸决定整体等比缩放，平面朝下当刻印面。
             </div>
             {libHeightMm !== null && (
               <div style={{ lineHeight: 1.5, marginTop: 2, opacity: 0.85 }}>
@@ -469,7 +469,6 @@ export default function App() {
         <Field label="边框">
           <select
             value={spec.body.border.style}
-            disabled={Boolean(libStyle) && libStyle !== 'plate'}
             onChange={(e) =>
               patch((s) => {
                 const style = e.target.value as SealSpec['body']['border']['style'];
@@ -482,7 +481,7 @@ export default function App() {
                     : 1.2;
               })
             }
-            style={{ ...inputStyle, opacity: libStyle && libStyle !== 'plate' ? 0.55 : 1 }}
+            style={inputStyle}
           >
             <option value="none">无边框</option>
             <option value="thin">单线（细）</option>

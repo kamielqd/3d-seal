@@ -473,7 +473,7 @@ function check3D(mesh: SolidMesh, body: BodyConfig, relief: ReliefConfig, proces
         severity: 'info',
         measured: round2(over.slopeAreaMm2),
         limit: 60,
-        message: `有 ${round2(over.slopeAreaMm2)}mm² 悬空斜面（与水平夹角 <30°）：需要支撑，或把手柄改成桥形。`,
+        message: `有 ${round2(over.slopeAreaMm2)}mm² 悬空斜面（与水平夹角 <30°）：FDM 上需要支撑；阳刻可以缩小浮雕深度或换更扁的主体来减少它。`,
         highlight: over.slopeHighlight,
       });
     }
@@ -489,7 +489,7 @@ function check3D(mesh: SolidMesh, body: BodyConfig, relief: ReliefConfig, proces
         measured: round2(over.bridgeAreaMm2),
         limit: 20,
         message: blocks
-          ? `有 ${round2(over.bridgeAreaMm2)}mm² 水平悬空面：FDM 贴床时底板整片悬在字母上方，支撑拆不掉，已阻止导出。请切换阴刻，或选「平装无手柄」后按面朝上打印。`
+          ? `有 ${round2(over.bridgeAreaMm2)}mm² 水平悬空面：FDM 贴床时底板整片悬在字母上方，支撑拆不掉，已阻止导出。请切换阴刻，或改用测试片（平装）后按面朝上打印阳刻。`
           : `有 ${round2(over.bridgeAreaMm2)}mm² 水平悬空面：FDM 无法一次架桥，需要支撑（阳刻盖印面朝下时，底板整片悬在字母上方）。`,
         fix: blocks ? 'fix:switchRelief' : undefined,
         highlight: over.bridgeHighlight,

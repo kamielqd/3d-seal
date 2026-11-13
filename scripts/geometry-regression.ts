@@ -232,7 +232,8 @@ check(merged.length === 2, 'unionContours 返回 外环+孔 两条环', `rings=$
 
 /* ---------- 7. 打印取向：face-up 只对阳刻有意义 ---------- */
 const baseSpec = createDefaultSpec();
-(baseSpec.body as { styleId?: string }).styleId = 'plate';
+(baseSpec.body as { styleId?: string; handle?: string }).styleId = 'plate';
+(baseSpec.body as { handle?: string }).handle = 'none';
 const plateThickness = (body: { thicknessMm?: number; baseThicknessMm: number }): number =>
   body.thicknessMm ?? body.baseThicknessMm;
 const sealRect: Polygon2D = { outer: rect(-6, -2, 6, 2), holes: [] };
@@ -768,21 +769,117 @@ check(
     : String(orientationError),
 );
 
-// 阳刻 + 外部主体必须抛可读错误，而不是打出一枚歪的章
-let libraryRaisedError: unknown = null;
-try {
-  const raisedSpec = { ...librarySpec('classic'), relief: { mode: 'raised' as const, depthMm: 1.2 } };
-  await buildSeal(raisedSpec, textLikePolygons());
-} catch (error) {
-  libraryRaisedError = error;
+/* ---------- 12. 四个内置主体：边框 + 阳刻 ---------- */
+setBodyReader(async (style) => {
+  const buffer = readFileSync(new URL(`../public/bodies/${style.file}`, import.meta.url));
+  return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
+});
+
+const libRect: Polygon2D = { outer: rect(-5, -2, 5, 2), holes: [] };
+function libSpec(id: string, mode: 'engraved' | 'raised', borderStyle: 'none' | 'thin' = 'thin', process: 'fdm' | 'resin' = 'fdm') {
+  return {
+    ...baseSpec,
+    body: {
+      ...baseSpec.body,
+      styleId: id,
+      sizeMm: 30,
+      handle: 'none' as const,
+      border: { style: borderStyle, widthMm: 1.2, insetMm: 1.2 },
+    },
+    relief: { ...baseSpec.relief, mode, depthMm: 1.2 },
+    print: { process, minStrokeMm: process === 'fdm' ? 0.4 : 0.2, minGapMm: process === 'fdm' ? 0.4 : 0.15 },
+  } as unknown as Parameters<typeof buildSeal>[0];
 }
-check(
-  libraryRaisedError instanceof SealGeometryError && libraryRaisedError.status === 'ExternalBodyRequiresEngrave',
-  '阳刻 + 外部主体：抛 ExternalBodyRequiresEngrave',
-  libraryRaisedError instanceof SealGeometryError
-    ? libraryRaisedError.message.slice(0, 60)
-    : String(libraryRaisedError),
-);
+function meshZ(m: SolidMesh) {
+  const p = m.vertProperties;
+  const st = m.numProp;
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (let i = 0; i < p.length; i += st) {
+    if (p[i + 2]! < lo) lo = p[i + 2]!;
+    if (p[i + 2]! > hi) hi = p[i + 2]!;
+  }
+  return { lo: +lo.toFixed(3), hi: +hi.toFixed(3) };
+}
+
+for (const id of ['classic', 'cylinder', 'column', 'dome']) {
+  const plain = await buildSeal(libSpec(id, 'engraved', 'none'), [libRect]);
+  const bordered = await buildSeal(libSpec(id, 'engraved', 'thin'), [libRect]);
+  check(bordered.status === 'NoError' && bordered.triangleCount > plain.triangleCount, `${id}：边框接入实体（面数增加）`, `${plain.triangleCount} → ${bordered.triangleCount}`);
+
+  const raised = await buildSeal(libSpec(id, 'raised'), [libRect]);
+  const zr = meshZ(raised);
+  check(raised.status === 'NoError' && zr.lo === 0, `${id}：阳刻可生成且贴床 z=0`, JSON.stringify(zr));
+  const fdmVerdict = (raised.violations ?? []).filter((v) => v.rule === 'bridge.span');
+  check(fdmVerdict.length === 0 || fdmVerdict.every((v) => v.severity === 'error'), `${id}：阳刻+FDM 若报 bridge.span 必须是 error（不能当可打印）`, fdmVerdict.map((v) => v.severity).join(','));
+
+  const raisedResin = await buildSeal(libSpec(id, 'raised', 'thin', 'resin'), [libRect]);
+  const resinVerdict = (raisedResin.violations ?? []).filter((v) => v.rule === 'bridge.span');
+  check(raisedResin.status === 'NoError' && resinVerdict.every((v) => v.severity !== 'error'), `${id}：阳刻+树脂不阻断`, resinVerdict.map((v) => v.severity).join(',') || '无');
+}
+/* ---------- 12h. 外部主体：边框宽度真进几何 + 阳刻总高预算 ---------- */
+{
+  const classic = BODY_STYLES.find((style) => style.id === 'classic')!;
+  // 用实测包围盒算比例，不用注册表里四舍五入过的 sourceBoxCm（2.03 vs 2.033）
+  const mother = await loadBody(classic.id);
+  const motherBox = mother.boundingBox();
+  const motherFootCm = Math.max(motherBox.max[0] - motherBox.min[0], motherBox.max[1] - motherBox.min[1]);
+  const motherHeightCm = motherBox.max[2] - motherBox.min[2];
+  const motherHeightMm = motherHeightCm * (SIZE_MM / motherFootCm);
+
+  // 边框宽度必须真的改变几何：0.8 与 1.6 刻掉的材料差一个环面积。
+  // 只比面数不可靠（同一圈环换宽度拓扑可能不变），所以比体积。
+  const atWidth = async (widthMm: number) => {
+    const base = libSpec('classic', 'engraved', 'thin');
+    const spec = { ...base, body: { ...base.body, border: { style: 'thin' as const, widthMm, insetMm: 1.2 } } };
+    return await buildSeal(spec, [libRect]);
+  };
+  const w08 = await atWidth(0.8);
+  const w16 = await atWidth(1.6);
+  const v08 = meshVolume(w08);
+  const v16 = meshVolume(w16);
+  check(
+    v08 - v16 > 30,
+    '外部主体 · 边框宽度 0.8 vs 1.6 确实变了（体积差一个环）',
+    `0.8: ${v08.toFixed(0)} / 1.6: ${v16.toFixed(0)} mm³（差 ${(v08 - v16).toFixed(0)}）`,
+  );
+
+  // 阳刻：总高 = depth + 源比例高度（抬高那段必须真的在实体里）
+  const raised = await buildSeal(libSpec('classic', 'raised', 'none'), [libRect]);
+  const rz = meshZ(raised);
+  check(
+    Math.abs(rz.hi - (1.2 + motherHeightMm)) < 0.05,
+    '外部主体 · 阳刻：总高 = depth + 源比例高度',
+    `${rz.hi.toFixed(2)} vs ${(1.2 + motherHeightMm).toFixed(2)}`,
+  );
+
+  // 总高预算必须扣掉阳刻抬高：上限 30 → 母体只有 28.8 可长
+  const cappedBase = libSpec('classic', 'raised', 'none');
+  const capped = await buildSeal(
+    { ...cappedBase, body: { ...cappedBase.body, maxHeightMm: 30 } },
+    [libRect],
+  );
+  const cappedStats = lastBuildStats();
+  check(
+    Math.abs((cappedStats?.heightMm ?? 0) - 30) < 0.05,
+    '外部主体 · 阳刻 + 总高上限：抬高那段也计入预算（总高正好 30）',
+    `heightMm=${cappedStats?.heightMm?.toFixed(2)}`,
+  );
+  const expectedFaceMm = ((30 - 1.2) / motherHeightCm) * motherFootCm;
+  check(
+    Math.abs((cappedStats?.faceSizeMm ?? 0) - expectedFaceMm) < 0.2,
+    '外部主体 · 阳刻 + 总高上限：足迹按 (上限 − 抬高) 反推',
+    `faceSizeMm=${cappedStats?.faceSizeMm?.toFixed(2)} vs ${expectedFaceMm.toFixed(2)}`,
+  );
+  const cappedNote = (capped.violations ?? []).find(
+    (v) => v.rule === 'size.range' && v.message.includes('总高上限'),
+  );
+  check(
+    cappedNote?.message.includes('阳刻抬高') === true,
+    '外部主体 · 阳刻 + 总高上限：文案说清「其中 1.2mm 是阳刻抬高」',
+    cappedNote?.message.slice(0, 80) ?? '无 size.range 提示',
+  );
+}
 
 console.log(failed === 0 ? '\n全部通过' : `\n${failed} 项失败`);
 process.exit(failed === 0 ? 0 : 1);
