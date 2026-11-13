@@ -20,12 +20,16 @@ export interface ImagePayload {
   data: Uint8ClampedArray;
 }
 
+import type { LayerFit } from '../core/layout-bridge.ts';
+
 export interface BuildRequest {
   id: number;
   spec: SealBuildSpec & { layers?: Layer[] };
   polygons: Polygon2D[];
   /** 按图层 id 索引的位图；没有像素的图像图层会被跳过（例如从分享链接打开） */
   images?: Record<string, ImagePayload>;
+  /** 文字图层自动适应章面的结果；没有或 null 表示没缩过 */
+  autoFit?: LayerFit | null;
 }
 
 export interface BuildProgress {
@@ -65,7 +69,7 @@ function stage(id: number, s: string): void {
 }
 
 ctx.onmessage = async (ev: MessageEvent<BuildRequest>) => {
-  const { id, spec, polygons, images } = ev.data;
+  const { id, spec, polygons, images, autoFit } = ev.data;
   try {
     stage(id, '初始化 manifold');
     await getManifold();
@@ -100,6 +104,7 @@ ctx.onmessage = async (ev: MessageEvent<BuildRequest>) => {
       {
         ...spec,
         orientation: spec.print?.orientation ?? 'face-down',
+        autoFit: autoFit ?? null,
         layerGroups: layerGroups.length >= 2 ? layerGroups : undefined,
       },
       all,

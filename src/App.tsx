@@ -151,6 +151,8 @@ export default function App() {
             spec: { body: spec.body, relief: spec.relief, print: spec.print, layers: spec.layers },
             polygons,
             images,
+            // 自动适应章面的结果：几何侧据此把文案从「建议放大字号」换成「系统替你缩过」
+            autoFit: layerFits[0],
           });
           // 兜底：几何引擎初始化失败时不会回消息，不能一直转圈
           setTimeout(() => {

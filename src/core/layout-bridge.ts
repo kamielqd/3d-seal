@@ -47,7 +47,10 @@ function measure(polys: LayoutPolygon[]): { w: number; h: number } {
  */
 function fitBoxMm(spec: SealSpec): { w: number; h: number } {
   const b = spec.body;
-  const margin = Math.max(b.border.insetMm + b.border.widthMm, b.sizeMm * 0.06);
+  // 除了边框占位，还要留一条笔画宽的 clearance：只减「边框内缩+线宽」时，
+  // 排满的字会正好贴到边框内沿（实测最外笔画离边框只剩 0.15mm）。
+  const clearance = Math.max(0.3, spec.print?.minStrokeMm ?? 0.4);
+  const margin = Math.max(b.border.insetMm + b.border.widthMm, b.sizeMm * 0.06) + clearance;
   const usable = Math.max(4, b.sizeMm - margin * 2);
   const factor = b.shape === 'square' ? 1 : b.shape === 'circle' ? 0.86 : 0.8;
   return { w: usable * factor, h: usable * factor };
