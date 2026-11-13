@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>印章工坊 · 3D 可打印印章生成器</title>
+    <meta name="description" content="浏览器端生成可 3D 打印的印章模型：方章、圆章、多边形，文字与图像，阳刻阴刻，导出 STL/3MF。" />
+    <script>
+      // 启动期的运行时错误直接显示到页面上，避免白屏无从排查
+      (function () {
+        var show = function (label, msg) {
+          var root = document.getElementById('root');
+          var box = document.getElementById('boot-error') || document.createElement('pre');
+          box.id = 'boot-error';
+          box.style.cssText =
+            'position:fixed;left:0;top:0;right:0;bottom:0;margin:0;padding:24px;overflow:auto;' +
+            'background:#fff5f5;color:#8a1f1f;font:13px/1.6 monospace;white-space:pre-wrap;z-index:99999';
+          box.textContent += label + msg + '\n';
+          (root || document.body).appendChild(box);
+        };
+        window.addEventListener('error', function (e) {
+          show('ERROR: ', (e && (e.message || (e.error && e.error.message))) || String(e));
+        });
+        window.addEventListener('unhandledrejection', function (e) {
+          var r = e && e.reason;
+          show('REJECTED: ', (r && (r.stack || r.message)) || String(r));
+        });
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

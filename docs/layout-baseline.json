@@ -1,0 +1,191 @@
+{
+  "case": "印章工坊",
+  "font": "smiley-sans",
+  "toleranceMm": 0.05,
+  "textBlocks": {
+    "fontSizeMm": 8,
+    "letterSpacingMm": 0.6
+  },
+  "summary": {
+    "ringCount": 10,
+    "outerCCW": 6,
+    "innerCW": 4,
+    "bbox": {
+      "minX": -13.48,
+      "minY": -3.96,
+      "maxX": 13.48,
+      "maxY": 3.96,
+      "width": 26.96,
+      "height": 7.92
+    }
+  },
+  "rings": [
+    {
+      "index": 0,
+      "dir": "CCW",
+      "kind": "outer",
+      "points": 17,
+      "area": 7.373,
+      "bbox": [
+        -13.48,
+        -2.72,
+        -10.288,
+        3.832
+      ]
+    },
+    {
+      "index": 1,
+      "dir": "CCW",
+      "kind": "outer",
+      "points": 26,
+      "area": 10.37,
+      "bbox": [
+        -10.856,
+        -3.784,
+        -7.592,
+        3.432
+      ]
+    },
+    {
+      "index": 2,
+      "dir": "CW",
+      "kind": "hole",
+      "points": 18,
+      "area": -8.919,
+      "bbox": [
+        -6.136,
+        1.432,
+        -0.504,
+        3.96
+      ]
+    },
+    {
+      "index": 3,
+      "dir": "CW",
+      "kind": "hole",
+      "points": 6,
+      "area": -0.993,
+      "bbox": [
+        -3.984,
+        2.072,
+        -2.448,
+        2.776
+      ]
+    },
+    {
+      "index": 4,
+      "dir": "CCW",
+      "kind": "outer",
+      "points": 20,
+      "area": 15.301,
+      "bbox": [
+        -6.376,
+        -3.96,
+        -1.056,
+        1.072
+      ]
+    },
+    {
+      "index": 5,
+      "dir": "CW",
+      "kind": "hole",
+      "points": 4,
+      "area": -1.144,
+      "bbox": [
+        -4.8,
+        0.008,
+        -2.152,
+        0.448
+      ]
+    },
+    {
+      "index": 6,
+      "dir": "CW",
+      "kind": "hole",
+      "points": 4,
+      "area": -1.165,
+      "bbox": [
+        -4.904,
+        -1,
+        -2.256,
+        -0.552
+      ]
+    },
+    {
+      "index": 7,
+      "dir": "CCW",
+      "kind": "outer",
+      "points": 12,
+      "area": 11.361,
+      "bbox": [
+        0.688,
+        -3.56,
+        6.216,
+        3.52
+      ]
+    },
+    {
+      "index": 8,
+      "dir": "CCW",
+      "kind": "outer",
+      "points": 47,
+      "area": 11.891,
+      "bbox": [
+        9.056,
+        -3.792,
+        13.48,
+        3.96
+      ]
+    },
+    {
+      "index": 9,
+      "dir": "CCW",
+      "kind": "outer",
+      "points": 19,
+      "area": 6.126,
+      "bbox": [
+        7.568,
+        -2.616,
+        10.056,
+        3.96
+      ]
+    }
+  ],
+  "ring6": {
+    "text": "印章工坊二号",
+    "chars": 6,
+    "fits": true,
+    "usedSpanDeg": 103.13,
+    "sameRadius": true,
+    "minCenterGapDeg": 17.57
+  },
+  "huiwen": {
+    "isFour": true,
+    "slots": [
+      {
+        "char": "印",
+        "slot": "右上",
+        "x": 4.75,
+        "y": 4.75
+      },
+      {
+        "char": "章",
+        "slot": "右下",
+        "x": 4.75,
+        "y": -4.75
+      },
+      {
+        "char": "工",
+        "slot": "左上",
+        "x": -4.75,
+        "y": 4.75
+      },
+      {
+        "char": "坊",
+        "slot": "左下",
+        "x": -4.75,
+        "y": -4.75
+      }
+    ]
+  }
+}

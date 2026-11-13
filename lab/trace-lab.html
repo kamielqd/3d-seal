@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>trace lab · 图像描摹验收</title>
+    <style>
+      body { margin: 0; padding: 14px; background: #14161a; color: #e8eaed; font-family: system-ui, sans-serif; }
+      h1 { font-size: 15px; margin: 0 0 10px; font-weight: 600; }
+      #log { font: 12px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; color: #c8ccd2; }
+      #sheet { display: block; margin-top: 12px; background: #fff; border-radius: 4px; max-width: 100%; height: auto; }
+    </style>
+  </head>
+  <body>
+    <h1>图像描摹验收（浏览器真实路径：createImageBitmap → OffscreenCanvas → trace）</h1>
+    <div id="log">running…</div>
+    <canvas id="sheet" width="1200" height="1400"></canvas>
+    <script type="module" src="./trace-lab.ts"></script>
+  </body>
+</html>

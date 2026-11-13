@@ -1,0 +1,10 @@
+﻿node_modules/
+dist/
+dist-lab/
+temp/
+out/
+_baseline/
+_probe/*.mjs
+_probe/*.bundle.*
+*.log
+*.err
