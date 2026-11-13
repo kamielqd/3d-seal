@@ -236,6 +236,17 @@ const ringArea = ring.reduce((sum, p) => sum + Math.abs(shoelace(p.outer)) - p.h
 check(ringArea > 10 && ringArea < 40, 'outline 模式：实心块变成等宽环', `环面积≈${ringArea.toFixed(1)}mm²`);
 
 check(combinePolygons(squarePolys, placed).length === squarePolys.length + placed.length, 'combinePolygons 扁平合并', '');
+
+/* ---------- 10. 同深度图层重叠 ---------- */
+const textGroup = { id: 't1', kind: 'text' as const, polygons: [sealRect] };
+const imgGroup = { id: 'i1', kind: 'image' as const, polygons: [{ outer: rect(0, -3, 4, 3), holes: [] }] };
+const overlapMesh = await buildSeal(
+  { ...engravedSpec, layerGroups: [textGroup, imgGroup] },
+  combinePolygons(textGroup.polygons, imgGroup.polygons),
+);
+const overlap = (overlapMesh.violations ?? []).find((v) => v.rule === 'overlap.samedepth');
+check(overlap?.severity === 'warn' && overlap.measured >= 10, '文字/图像同深度重叠 → overlap.samedepth warn', `measured=${overlap?.measured}mm²`);
+check(Boolean(overlap?.highlight?.bbox), '重叠提示带高亮框', '');
 console.log(failed === 0 ? '\n全部通过' : `\n${failed} 项失败`);
 process.exit(failed === 0 ? 0 : 1);
 

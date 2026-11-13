@@ -23,6 +23,13 @@ export interface Polygon2D {
   holes: Contour[];
 }
 
+/** 一个图层（文字/图像）的多边形：用于跨图层重叠检测。 */
+export interface LayerPolygons {
+  id: string;
+  kind: 'text' | 'image';
+  polygons: Polygon2D[];
+}
+
 /** 二维包围盒。 */
 export interface Bounds2 {
   min: Vec2;

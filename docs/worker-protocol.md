@@ -107,6 +107,8 @@ export interface BuildRequest {
   id: string;
   spec: {
     body: BodyConfig; relief: ReliefConfig; print: PrintConfig;
+    /** 可选：按图层拆开的多边形，只有传了才做同深度重叠检测 */
+    layerGroups?: { id: string; kind: 'text' | 'image'; polygons: Polygon2D[] }[];
     /** 不填 = face-down（盖印面贴床）；face-up 仅 handle==='none'，否则 build:error */
     orientation?: 'face-down' | 'face-up';
   };

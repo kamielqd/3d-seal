@@ -72,24 +72,33 @@ ctx.onmessage = async (ev: MessageEvent<BuildRequest>) => {
 
     // 图像图层：位图 → 轮廓，和文字轮廓扁平拼接（真正的并集在 prepareSection 里一次做）
     const imageGroups: Polygon2D[][] = [];
+    const layerGroups: Array<{ id: string; kind: 'text' | 'image'; polygons: Polygon2D[] }> = [];
+    if (polygons.length > 0) {
+      layerGroups.push({ id: 'text', kind: 'text', polygons });
+    }
     for (const layer of spec.layers ?? []) {
       if (layer.kind !== 'image') continue;
       const image = images?.[layer.id];
       if (!image) continue;
       stage(id, '描摹图像');
-      imageGroups.push(
-        await traceLayer(layer, image, {
-          bodySizeMm: spec.body.sizeMm,
-          mode: layer.trace.mode ?? 'silhouette',
-          outlineWidthMm: layer.trace.outlineWidthMm,
-        }),
-      );
+      const imagePolys = await traceLayer(layer, image, {
+        bodySizeMm: spec.body.sizeMm,
+        mode: layer.trace.mode ?? 'silhouette',
+        outlineWidthMm: layer.trace.outlineWidthMm,
+      });
+      imageGroups.push(imagePolys);
+      // 保留每层自己的轮廓，几何层才能判断「哪块属于哪层」，做重叠检测
+      layerGroups.push({ id: layer.id, kind: 'image', polygons: imagePolys });
     }
     const all = combinePolygons(polygons, ...imageGroups);
 
     stage(id, 'manifold 就绪，开始布尔');
     const mesh = await buildSeal(
-      { ...spec, orientation: spec.print?.orientation ?? 'face-down' },
+      {
+        ...spec,
+        orientation: spec.print?.orientation ?? 'face-down',
+        layerGroups: layerGroups.length >= 2 ? layerGroups : undefined,
+      },
       all,
     );
     const payload: BuildResponse = {

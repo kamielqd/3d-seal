@@ -14,8 +14,9 @@
 import type { BodyConfig, PrintConfig, PrintProcess, ReliefConfig } from '../core/spec.ts';
 import type { PrepareReport } from './crosssection.ts';
 import type { CS } from './morphology.ts';
+import { sectionFromPolygons } from './crosssection.ts';
 import { bboxToHighlight, measureMaxStrokeRaster, measureMinGapRaster, measureMinStrokeRaster } from './raster.ts';
-import type { Contour, SolidMesh, Vec2 } from './types.ts';
+import type { Contour, LayerPolygons, SolidMesh, Vec2 } from './types.ts';
 
 export type Severity = 'error' | 'warn' | 'info';
 
@@ -31,7 +32,8 @@ export type PrintRuleId =
   | 'base.flat'
   | 'size.range'
   | 'pattern.bounds'
-  | 'auto.fix';
+  | 'auto.fix'
+  | 'overlap.samedepth';
 
 export interface ViolationHighlight {
   /** 违规区域的轮廓（mm，镜像前的章面坐标系）；stroke/gap 用 bbox 四角。 */
@@ -614,4 +616,52 @@ function toHighlight(section: CS | null): ViolationHighlight | undefined {
 
 function round2(value: number): number {
   return Math.round(value * 100) / 100;
+}
+
+/* ------------------------------------------------------------------ */
+/* 跨图层重叠                                                          */
+/* ------------------------------------------------------------------ */
+
+/** 两层在同深度重叠超过该面积才提示（mm²）。 */
+const OVERLAP_LIMIT_MM2 = 0.5;
+
+/**
+ * 同深度图层重叠检测。
+ *
+ * 当前 spec 只有一个全局 relief depth，文字与图像必然同深；两层重叠时二维并集
+ * 会把它们连成一片凹坑，边界彻底消失。这不是几何 bug（布尔结果是对的），
+ * 而是用户看不出来的设计问题，所以只给 warn + 高亮重叠区域。
+ */
+export async function checkLayerOverlap(groups: readonly LayerPolygons[]): Promise<Violation[]> {
+  const active = groups.filter((group) => group.polygons.length > 0);
+  if (active.length < 2) return [];
+
+  const out: Violation[] = [];
+  const sections = await Promise.all(active.map((group) => sectionFromPolygons(group.polygons)));
+  try {
+    for (let i = 0; i < active.length; i++) {
+      for (let j = i + 1; j < active.length; j++) {
+        const inter = sections[i]!.intersect(sections[j]!);
+        const area = inter.isEmpty() ? 0 : inter.area();
+        if (area > OVERLAP_LIMIT_MM2) {
+          out.push({
+            rule: 'overlap.samedepth',
+            severity: 'warn',
+            measured: round2(area),
+            limit: OVERLAP_LIMIT_MM2,
+            message: `${layerName(active[i]!.kind)}与${layerName(active[j]!.kind)}在同一深度重叠 ${round2(area)}mm²：凹槽会连成一片、边界消失；建议缩小/移动图层，或让文字避开图案。`,
+            highlight: toHighlight(inter),
+          });
+        }
+        inter.delete();
+      }
+    }
+  } finally {
+    for (const section of sections) section.delete();
+  }
+  return out;
+}
+
+function layerName(kind: LayerPolygons['kind']): string {
+  return kind === 'text' ? '文字' : '图像';
 }

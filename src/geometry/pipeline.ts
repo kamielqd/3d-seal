@@ -30,8 +30,8 @@
 import type { BodyConfig, PrintConfig, ReliefConfig } from '../core/spec.ts';
 import { getManifold, prepareSectionWithReport } from './crosssection.ts';
 import type { ManifoldKit, PrepareReport } from './crosssection.ts';
-import { checkPrintability } from './printability.ts';
-import type { Polygon2D, SolidMesh } from './types.ts';
+import { checkLayerOverlap, checkPrintability } from './printability.ts';
+import type { LayerPolygons, Polygon2D, SolidMesh } from './types.ts';
 import { SealGeometryError } from './types.ts';
 
 type CS = InstanceType<ManifoldKit['CrossSection']>;
@@ -47,6 +47,11 @@ export interface SealBuildSpec {
   print?: PrintConfig;
   /** 不填按 face-down。face-up 只在 handle === 'none' 时允许。 */
   orientation?: SealOrientation;
+  /**
+   * 可选：按图层拆开的多边形。传入才会做「同深度重叠」检测；
+   * 几何本身只吃合并后的 polygons，不依赖它。
+   */
+  layerGroups?: readonly LayerPolygons[];
 }
 
 /** 生成过程中的统计，便于日志与验收。 */
@@ -290,6 +295,18 @@ export async function buildSeal(spec: SealBuildSpec, polygons: readonly Polygon2
   } finally {
     prepared?.delete();
     prepared = null;
+  }
+
+  // 6) 跨图层重叠（只有调用方给了分层信息才做）：同深度两层重叠会合并成一整块凹坑
+  if (spec.layerGroups !== undefined && spec.layerGroups.length > 1) {
+    try {
+      mesh.violations = [
+        ...(mesh.violations ?? []),
+        ...(await checkLayerOverlap(spec.layerGroups)),
+      ];
+    } catch {
+      // 重叠检测失败不影响主结果
+    }
   }
 
   solid.delete();
