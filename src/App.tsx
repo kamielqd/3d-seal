@@ -186,6 +186,8 @@ export default function App() {
   const fontText = textLayer && textLayer.kind === 'text' ? textLayer.text : '';
   const missing = useMemo(() => checkMissing(fontText, fontId), [fontText, fontId]);
   const printIssues = violations.filter((v) => v.severity !== 'info');
+  /** 提示级：不影响出实体/导出，但用户该知道（如四字印必然出现的 0.17mm 窄缝） */
+  const hints = violations.filter((v) => v.severity === 'info');
   /** 阻断级问题：不允许导出（例如阳刻+手柄的 809mm² 悬空面） */
   const blocking = violations.some((v) => v.severity === 'error');
   const imageLayers = spec.layers.filter((l): l is ImageLayer => l.kind === 'image');
@@ -593,6 +595,19 @@ export default function App() {
           </div>
         )}
 
+        {hints.length > 0 && (
+          <div style={{ marginTop: 14 }}>
+            <div style={{ fontSize: 12, color: '#7a746b', marginBottom: 4 }}>
+              提示（{hints.length}）· 不影响导出
+            </div>
+            {hints.map((v, i) => (
+              <div key={`hint-${v.rule}-${i}`} style={{ ...violationStyle, color: '#7a746b' }}>
+                <strong>{v.rule}</strong>　{v.message}
+              </div>
+            ))}
+          </div>
+        )}
+
         {error && <p style={{ color: '#b3261e', fontSize: 12, marginTop: 12 }}>{error}</p>}
 
         <div style={{ marginTop: 18, paddingTop: 12, borderTop: '1px solid #eeeae1' }}>
@@ -611,6 +626,7 @@ export default function App() {
             mesh={mesh}
             orientation={spec.print.orientation ?? 'face-down'}
             minHeight={narrow ? 240 : 420}
+            sizeMm={spec.body.sizeMm}
           />
           <div style={{ position: 'absolute', left: 12, bottom: 10, fontSize: 12, color: '#7a746b' }}>{status}</div>
           <div style={{ position: 'absolute', left: 12, top: 10, fontSize: 11, color: '#a39c91' }}>

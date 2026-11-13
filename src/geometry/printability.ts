@@ -142,14 +142,17 @@ export function checkPrintability(input: PrintabilityInput): Violation[] {
     if (!gap.atLimit && gap.sizeMm < minGapMm - EPS) {
       const welded = input.prepare?.weldedGapAreaMm2 ?? 0;
       const advice = welded > 0.01
-        ? `闭运算已合并 ${round2(welded)}mm² 窄缝，再合会把相邻笔画焊死；建议改字距/字重或换字体。`
-        : '建议改字号/字距或换字体。';
+        ? `闭运算已合并 ${round2(welded)}mm² 窄缝，再合会把相邻笔画焊死；想彻底拉开只能少排几个字、放大章面或换窄字体。`
+        : '想彻底拉开只能少排几个字、放大章面或换窄字体。';
       out.push({
         rule: 'gap.min',
-        severity: 'warn',
+        // 提示级，不是警告：间隙只影响两笔会不会粘连，不影响出实体、导出和打印。
+        // 30mm 章面排四字时间隙必然是 0.17mm 级（随字号等比缩放，调字距无解），
+        // 卡成 warn 等于让最常见的场景永远挂黄条，用户很快就会学会无视它。
+        severity: 'info',
         measured: round2(gap.sizeMm),
         limit: minGapMm,
-        message: `最窄间隙 ${round2(gap.sizeMm)}mm，低于 ${minGapMm}mm：两笔会粘连，盖出来糊成一片。${advice}`,
+        message: `最窄间隙 ${round2(gap.sizeMm)}mm，窄于参考值 ${minGapMm}mm：两笔边缘可能轻微粘连，盖出来略糊。${advice}`,
         fix: 'fix:space',
         highlight: { polygons: bboxToHighlight(gap.bbox), bbox: gap.bbox ?? undefined },
       });
@@ -288,12 +291,16 @@ function checkPatternBounds(section: CS, body: BodyConfig): Violation[] {
   let minY = Infinity;
   let maxX = -Infinity;
   let maxY = -Infinity;
+  /** 图案上真实的离圆心最远距离（顶点级，不是包围盒角点） */
+  let maxRadius = 0;
   for (const c of contours) {
     for (const [x, y] of c) {
       if (x < minX) minX = x;
       if (x > maxX) maxX = x;
       if (y < minY) minY = y;
       if (y > maxY) maxY = y;
+      const d = Math.hypot(x, y);
+      if (d > maxRadius) maxRadius = d;
     }
   }
 
@@ -301,15 +308,17 @@ function checkPatternBounds(section: CS, body: BodyConfig): Violation[] {
   let limitX = half;
   let limitY = half;
   if (body.shape === 'circle') {
-    // 圆章按内切圆判：外接矩形超出圆边同样会悬空
-    const r = Math.hypot(Math.max(Math.abs(minX), Math.abs(maxX)), Math.max(Math.abs(minY), Math.abs(maxY)));
+    // 圆章按真实顶点半径判。**不能用包围盒角点**：
+    // 环形排版的外接矩形四角在 √2 倍半径处，用角点会把合法的圆章环形文字
+    // 误判成超出 4~5mm 并 card 成 error 级、阻断导出（实测 4 字环章报 21.83mm，实际最远 17mm）。
+    const r = maxRadius;
     if (r > half + EPS) {
       return [{
         rule: 'pattern.bounds',
         severity: 'error',
         measured: round2(r),
         limit: half,
-        message: `图案最远角 ${round2(r)}mm 超出圆章半径 ${round2(half)}mm：会悬空、印不出来。`,
+        message: `图案最远点距圆心 ${round2(r)}mm，超出圆章半径 ${round2(half)}mm：会悬空、印不出来。`,
         fix: 'fix:fitPattern',
         highlight: { bbox: [minX, minY, maxX, maxY] },
       }];

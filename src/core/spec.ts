@@ -126,7 +126,15 @@ export interface SealSpec {
 
 export const FDM_LIMITS = {
   minStrokeMm: 0.4,
-  minGapMm: 0.4,
+  /**
+   * 间隙比笔画宽度的下限放宽一档，因为这两个数不是一回事：
+   * 0.4mm 是「喷嘴挤出的线能不能站住」的保守下限；间隙只决定两笔会不会粘连。
+   * 30mm 章面排四字（字号约 7mm）时间隙必然落在 0.17mm 级——间隙随字号等比缩放，
+   * 调字距/换字体都救不回来，卡 0.4 只会让最常见的四字印永远报警。
+   * 真正会焊死的是 0.2mm 以下；0.3mm 只是笔画边缘略糊，盖印时肉眼几乎看不出。
+   * 所以判定仍按此值，但 `gap.min` 在 printability 里是 `info` 提示，不拦导出。
+   */
+  minGapMm: 0.3,
   reliefDepthMm: 1.2,
 } as const;
 
