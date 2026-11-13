@@ -17,6 +17,7 @@ export default defineConfig({
     rollupOptions: {
       input: {
         lab: 'lab/trace-lab.html',
+        printCheck: 'lab/print-check.html',
       },
     },
   },

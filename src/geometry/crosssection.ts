@@ -214,6 +214,13 @@ export interface PrepareReport {
   thickenedMm: number;
   /** 闭运算焊掉的缝隙总面积 mm²（>0 表示有窄缝被合并）。 */
   weldedGapAreaMm2: number;
+  /** 闭运算**之前**图案的面积 mm²；用来算「焊掉了百分之几」。 */
+  areaBeforeMm2: number;
+  /**
+   * 闭运算**之前**实测的最小间隙 mm；null 表示 ≥ 上限（没量到）。
+   * 只用于文案（「设计 0.15mm，已焊到 0.30mm」），不参与判据。
+   */
+  gapBeforeMm: number | null;
   /** 简化容差 mm。 */
   simplifyMm: number;
   notes: string[];
@@ -259,12 +266,23 @@ export async function prepareSectionWithReport(
     minGapWidthMm: null,
     thickenedMm: 0,
     weldedGapAreaMm2: 0,
+    areaBeforeMm2: 0,
+    gapBeforeMm: null,
     simplifyMm,
     notes: [],
   };
 
   let section = await sectionFromPolygons(polygons);
   const areaOf = (s: InstanceType<ManifoldKit['CrossSection']>): number => (s.isEmpty() ? 0 : s.area());
+
+  // 0) 记下「闭运算之前」的面积与最小间隙。printability 用它们算焊接比例、
+  //    并在提示里写清「设计间隙 X → 已焊到 Y」（只做文案，不参与判据）。
+  report.areaBeforeMm2 = areaOf(section);
+  if (!section.isEmpty()) {
+    const gapLimit = Math.max(minGapMm, minStrokeMm, 0.1);
+    const rawGap = measureMinGapRaster(section, { limitMm: gapLimit, gridMm: 0.05 });
+    report.gapBeforeMm = rawGap.atLimit ? null : rawGap.sizeMm;
+  }
 
   // 1) 间隙下限：闭运算焊死窄缝（闭运算只填缝，不加粗笔画）
   if (minGapMm > 0 && !section.isEmpty()) {

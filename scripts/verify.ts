@@ -42,6 +42,9 @@ function baseSpec(overrides: Partial<SealSpec> = {}): SealSpec {
       handle: 'none',
       handleHeightMm: 14,
       handleDiameterMm: 14,
+      // 边框和图案同深度、会一起出现在 z 极值层里（27.6mm 的框盖住 6mm 的图案），
+      // 这几条断言要测的是图案本身，所以关掉边框。
+      border: { style: 'none' as const, widthMm: 1.2, insetMm: 1.2 },
     },
     relief: { mode: 'raised', depthMm: 1.2 },
     print: { process: 'fdm', minStrokeMm: 0.4, minGapMm: 0.4 },

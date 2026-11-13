@@ -8,7 +8,7 @@
  * 栅格路线：0.05mm/格 + Felzenszwalb 精确 EDT + 中轴（局部极大）判定：
  *   - 笔画宽 ≈ 2×(到最近空像素的距离) − 1 格；
  *   - 细小材料的面积按「中轴长度 × 宽度」累计，低于阈值视为笔尖收笔，忽略；
- *   - 间隙 = 空区到最近实体的 EDT 的局部极大 ×2（两壁之间即真实间隙）。
+ *   - 间隙 = 中脊上量对面向两侧材料的实际跨度（不是 2×最近距离，那会在内角误报）。
  *
  * 坐标：栅格 (px,py) → mm = (x0 + (px+0.5)*grid, y0 + (py+0.5)*grid)。
  */
@@ -287,6 +287,11 @@ export function measureMinStrokeRaster(section: CS, options: MeasureOptions): Fe
 /**
  * 最小间隙：空区 EDT 的局部极大 ×2（两壁之间的中脊就是间隙）。
  * 只统计「夹在材料之间」的中脊：中脊两侧至少各有一个方向能碰到材料。
+ *
+ * 缝宽必须量**对面两侧的实际跨度**，不能用 2×最近距离：
+ * d 只是到最近材料的距离，碰不到对面那一壁。边框/「口」字形内角到自己的
+ * 拐角只有 2 格（0.1mm），对面墙却在 12mm 外，用 2d-1 会把每个内角都误报成
+ * 「0.1mm 级窄缝」（实测默认边框环给出 4 个角 × 0.15mm 的假阳性）。
  */
 export function measureMinGapRaster(section: CS, options: MeasureOptions): FeatureMeasurement {
   const raster = rasterize(section, options.gridMm ?? 0.05);
@@ -310,11 +315,16 @@ export function measureMinGapRaster(section: CS, options: MeasureOptions): Featu
       // 中脊：四邻域都不比自己大（平台像素也算）
       const isMax = dist[i + 1]! <= d && dist[i - 1]! <= d && dist[i + w]! <= d && dist[i - w]! <= d;
       if (!isMax) continue;
-      // 空区宽 = 2d-1 格：d 到最近实体的格心，边界各让 0.5 格
-      const gap = (2 * d - 1) * grid;
-      if (gap >= options.limitMm) continue;
-      // 两侧都必须有材料，排除外边界
-      if (!hasMaterialOnBothSides(mask, w, h, x, y)) continue;
+
+      // 两个方向各量到对面材料的格数，取更窄的那一对当缝宽（只接受两侧都有材料）
+      const spanX = runToMaterial(mask, w, h, x, y, -1, 0) + runToMaterial(mask, w, h, x, y, 1, 0);
+      const spanY = runToMaterial(mask, w, h, x, y, 0, -1) + runToMaterial(mask, w, h, x, y, 0, 1);
+      const span = Math.min(spanX, spanY);
+      if (!Number.isFinite(span)) continue;
+
+      // 空区宽 = span-1 格：两侧各让半格的格心几何
+      const gap = (span - 1) * grid;
+      if (gap < grid || gap >= options.limitMm) continue;
       atLimit = false;
       areaSum += gap * grid;
       if (gap < size) size = gap;
@@ -335,36 +345,14 @@ export function measureMinGapRaster(section: CS, options: MeasureOptions): Featu
   };
 }
 
-function hasMaterialOnBothSides(mask: Uint8Array, w: number, h: number, x: number, y: number): boolean {
-  let left = false;
-  let right = false;
-  let up = false;
-  let down = false;
-  for (let dx = -1; x + dx >= 0; dx--) {
-    if (mask[y * w + x + dx] === 1) {
-      left = true;
-      break;
-    }
+/** 从 (x,y) 沿 (dx,dy) 走几格碰到材料；碰不到返回 Infinity。 */
+function runToMaterial(mask: Uint8Array, w: number, h: number, x: number, y: number, dx: number, dy: number): number {
+  for (let k = 1; ; k++) {
+    const nx = x + dx * k;
+    const ny = y + dy * k;
+    if (nx < 0 || ny < 0 || nx >= w || ny >= h) return Infinity;
+    if (mask[ny * w + nx] === 1) return k;
   }
-  for (let dx = 1; x + dx < w; dx++) {
-    if (mask[y * w + x + dx] === 1) {
-      right = true;
-      break;
-    }
-  }
-  for (let dy = -1; y + dy >= 0; dy--) {
-    if (mask[(y + dy) * w + x] === 1) {
-      up = true;
-      break;
-    }
-  }
-  for (let dy = 1; y + dy < h; dy++) {
-    if (mask[(y + dy) * w + x] === 1) {
-      down = true;
-      break;
-    }
-  }
-  return (left && right) || (up && down);
 }
 
 /** 把 bbox 转成 highlight 结构需要的点集（四个角）。 */

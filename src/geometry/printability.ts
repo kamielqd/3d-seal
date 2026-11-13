@@ -23,6 +23,8 @@ export type Severity = 'error' | 'warn' | 'info';
 export type PrintRuleId =
   | 'stroke.min'
   | 'gap.min'
+  | 'ridge.min'
+  | 'weld.ratio'
   | 'island.min'
   | 'relief.aspect'
   | 'groove.aspect'
@@ -80,7 +82,7 @@ interface Preset {
 const FDM: Preset = {
   islandAreaMm2: 0.5,
   reliefRatio: 2,
-  grooveRatio: 1,
+  grooveRatio: 2.5,
   checkOverhang: true,
   minSizeMm: 10,
   maxSizeMm: 60,
@@ -90,7 +92,7 @@ const FDM: Preset = {
 const RESIN: Preset = {
   islandAreaMm2: 0.1,
   reliefRatio: 3,
-  grooveRatio: 1.5,
+  grooveRatio: 3,
   checkOverhang: false,
   minSizeMm: 5,
   maxSizeMm: 50,
@@ -103,6 +105,17 @@ const EPS = 0.01;
 /** 阴刻单条槽超过这个宽度，FDM 分离式桥接会塌（0.4–2mm 的槽可桥）。 */
 const BRIDGE_GROOVE_LIMIT_MM = 5;
 
+/**
+ * 闭运算焊掉「闭运算前图案面积」的多少比例算事故。
+ *
+ * 这是唯一能区分「轻微粘连」和「图案已经没了」的指标：料脊宽度只说明某一处
+ * 有多窄，焊接比例说明整体糊到什么程度。值按实测校准（真字形 + 真实体）：
+ *   四字/30mm/字号7 = 1.32%   两字/30mm/字号7 = 1.74%   两字/30mm/字号12 = 0.36%
+ *   四字/20mm/字号4.5 = 10.38%   六字/25mm/字号3.5 = 20.80%
+ * 取 5%：高于所有「还能看」的场景（最高 1.74%），低于已经糊成一团的场景（10%+）。
+ */
+const WELD_RATIO_LIMIT = 0.05;
+
 export function checkPrintability(input: PrintabilityInput): Violation[] {
   const out: Violation[] = [];
   const preset = input.print.process === 'resin' ? RESIN : FDM;
@@ -111,13 +124,22 @@ export function checkPrintability(input: PrintabilityInput): Violation[] {
   const depthMm = Math.max(0, input.relief.depthMm);
 
   const section = input.section;
+  const engraved = input.relief.mode === 'engraved';
 
-  // 搜索上限 0.7mm：超过这个宽度不可能违规，栅格也不必再看。
-  const widthLimitMm = Math.min(0.7, Math.max(minStrokeMm, depthMm / preset.reliefRatio, 0.1));
-  const gapLimitMm = Math.min(0.7, Math.max(minGapMm, depthMm / preset.grooveRatio, 0.1));
+  // 搜索上限：栅格只在「还可能违规」的宽度范围内细看。两条测量各有两种物理含义——
+  //   stroke：阳刻 = 立起来的墙宽；阴刻 = 挖下去的槽宽（同一次测量，两种读法）
+  //   gap   ：阳刻 = 两墙之间的沟；阴刻 = 两条槽之间剩下的料脊
+  // 上限必须 ≥ 各自的判据宽度，否则 atLimit（「没找到更窄的」= 通过）会变成假阴性。
+  const aspectSearchMm = Math.max(
+    minStrokeMm,
+    depthMm / preset.reliefRatio,
+    engraved ? depthMm / preset.grooveRatio : 0,
+    0.1,
+  );
+  const widthLimitMm = Math.min(1.2, aspectSearchMm);
+  const gapLimitMm = Math.min(1.2, Math.max(minGapMm, minStrokeMm, 0.1));
 
   let minWidthMm: number | null = null;
-  let minGapWidthMm: number | null = null;
 
   if (section !== null && !section.isEmpty()) {
     const stroke = measureMinStrokeRaster(section, { limitMm: widthLimitMm, gridMm: 0.05 });
@@ -137,9 +159,31 @@ export function checkPrintability(input: PrintabilityInput): Violation[] {
     }
 
     const gap = measureMinGapRaster(section, { limitMm: gapLimitMm, gridMm: 0.05 });
-    minGapWidthMm = gap.atLimit ? gapLimitMm : gap.sizeMm;
+    const gapMeasured = !gap.atLimit;
 
-    if (!gap.atLimit && gap.sizeMm < minGapMm - EPS) {
+    // 同一处宽度只报一次，取严重度更高的那条：
+    //   gap < minStroke            → ridge.min (info)：窄过一条挤出线，两笔会轻微粘连
+    //   minStroke ≤ gap < minGap   → gap.min  (info)：只是边缘轻微粘连，盖出来略糊
+    // 两条都是 info：默认四字 30mm 阴刻按实测永远落在这一档（闭运算把 0.15 焊成 0.30），
+    // 任何参数都消不掉，卡 warn 等于让最常见的场景永远挂黄条，用户很快学会无视。
+    const gapBefore = input.prepare?.gapBeforeMm ?? null;
+    const beforeNote =
+      gapBefore !== null && gapBefore < gap.sizeMm - 0.02
+        ? `（设计间隙 ${round2(gapBefore)}mm，闭运算已焊到 ${round2(gap.sizeMm)}mm）`
+        : '';
+    if (gapMeasured && gap.sizeMm < minStrokeMm - EPS) {
+      out.push({
+        rule: 'ridge.min',
+        severity: 'info',
+        measured: round2(gap.sizeMm),
+        limit: minStrokeMm,
+        message: engraved
+          ? `料脊 ${round2(gap.sizeMm)}mm 比一条挤出线还细${beforeNote}，两笔会轻微粘连、盖出来略糊：加大章面、少排几个字或放大字号；想彻底分开可换「平装阳刻」预设（阳刻时这条窄缝变成地面上的沟，不受 0.4mm 挤出线限制）。`
+          : `间隙 ${round2(gap.sizeMm)}mm 比一条挤出线（${minStrokeMm}mm）还窄${beforeNote}，两条笔画会轻微粘连：加大章面、少排几个字或放大字号。`,
+        fix: 'fix:space',
+        highlight: { polygons: bboxToHighlight(gap.bbox), bbox: gap.bbox ?? undefined },
+      });
+    } else if (gapMeasured && gap.sizeMm < minGapMm - EPS) {
       const welded = input.prepare?.weldedGapAreaMm2 ?? 0;
       const advice = welded > 0.01
         ? `闭运算已合并 ${round2(welded)}mm² 窄缝，再合会把相邻笔画焊死；想彻底拉开只能少排几个字、放大章面或换窄字体。`
@@ -161,19 +205,22 @@ export function checkPrintability(input: PrintabilityInput): Violation[] {
     out.push(...checkIslands(section, preset));
 
     // 亚喷嘴特征：不重复量（offset 计数有圆角噪声），汇总上面的违规类别
-    const subNozzle = out.filter((v) => v.rule === 'stroke.min' || v.rule === 'gap.min').length;
+    const subNozzle = out.filter(
+      (v) => v.rule === 'stroke.min' || v.rule === 'gap.min' || v.rule === 'ridge.min',
+    ).length;
     if (subNozzle > 0) {
       out.push({
         rule: 'nozzle.feature',
         severity: 'info',
         measured: subNozzle,
         limit: 0,
-        message: `有 ${subNozzle} 类亚喷嘴特征（<${minStrokeMm}mm）：切片器可能跳过或架桥糊平，已在预览高亮。`,
+        message: `有 ${subNozzle} 类亚喷嘴特征：切片器可能跳过或架桥糊平，已在预览高亮。`,
       });
     }
 
-    // 深宽比：只在拿到真实最小宽度时判（atLimit = 没有细到违规的笔画，视为通过）
-    if (depthMm > 0 && !strokeAtLimit && minWidthMm !== null) {
+    // 深宽比（墙）：只有阳刻的「笔画」才是立起来的墙。阴刻里同一个宽度是槽，
+    // 拿它判墙的深宽比是判错了对象，交给下面的 groove.aspect。
+    if (!engraved && depthMm > 0 && !strokeAtLimit && minWidthMm !== null) {
       const ratio = depthMm / Math.max(minWidthMm, 0.05);
       if (ratio > preset.reliefRatio + EPS) {
         out.push({
@@ -187,17 +234,18 @@ export function checkPrintability(input: PrintabilityInput): Violation[] {
       }
     }
 
-    if (input.relief.mode === 'engraved' && depthMm > 0 && !strokeAtLimit) {
-      const narrowest = Math.min(minWidthMm ?? depthMm, minGapWidthMm ?? depthMm);
-      const ratio = depthMm / Math.max(narrowest, 0.05);
+    // 深宽比（槽）：阴刻判**槽宽**，即细分后的笔画宽度。料脊（gap）不是槽，
+    // 把它算进深宽比会把「两笔之间剩下 0.15mm 料」误报成「槽窄到 0.15mm」。
+    if (engraved && depthMm > 0 && !strokeAtLimit && minWidthMm !== null) {
+      const ratio = depthMm / Math.max(minWidthMm, 0.05);
       if (ratio > preset.grooveRatio + EPS) {
         out.push({
           rule: 'groove.aspect',
           severity: 'warn',
           measured: round2(ratio),
           limit: preset.grooveRatio,
-          message: `阴刻槽深宽比 ${round2(ratio)}（${depthMm}mm 深 / ${round2(narrowest)}mm 宽），超过 ${preset.grooveRatio}：喷嘴进不去，排料也会塌。`,
-          fix: 'fix:switchRelief',
+          message: `阴刻槽深宽比 ${round2(ratio)}（${depthMm}mm 深 / ${round2(minWidthMm)}mm 槽宽），超过 ${preset.grooveRatio}：槽太深太窄，喷嘴进不去、排料也会塌。`,
+          fix: 'fix:reduceDepth',
         });
       }
     }
@@ -219,6 +267,24 @@ export function checkPrintability(input: PrintabilityInput): Violation[] {
     }
 
     out.push(...checkPatternBounds(section, input.body));
+  }
+
+  // 焊接比例：闭运算替用户焊掉了多少图案。料脊宽度只说「某处多窄」，
+  // 这个比例才说得清「整体糊成什么样」——焊掉 0.69mm² 无所谓，焊掉 20% 就是图案没了。
+  const weldedMm2 = input.prepare?.weldedGapAreaMm2 ?? 0;
+  const areaBeforeMm2 = input.prepare?.areaBeforeMm2 ?? 0;
+  if (weldedMm2 > 0 && areaBeforeMm2 > 0) {
+    const weldRatio = weldedMm2 / areaBeforeMm2;
+    if (weldRatio >= WELD_RATIO_LIMIT - EPS) {
+      out.push({
+        rule: 'weld.ratio',
+        severity: 'warn',
+        measured: round2(weldRatio * 100),
+        limit: round2(WELD_RATIO_LIMIT * 100),
+        message: `闭运算焊掉了 ${round2(weldRatio * 100)}% 的图案面积（${round2(weldedMm2)}mm² / ${round2(areaBeforeMm2)}mm²）：字太小或章面太挤，笔画已经粘成一片，盖出来会糊。加大章面、少排几个字或放大字号。`,
+        fix: 'fix:space',
+      });
+    }
   }
 
   if (input.solid) {

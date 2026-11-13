@@ -6,7 +6,7 @@
  *   20×20 方框挖 10×10 孔，保留环方向 + NonZero 后面积必须仍是 300（不是 400）。
  */
 import { createDefaultSpec } from '../src/core/spec.ts';
-import { buildSeal } from '../src/geometry/pipeline.ts';
+import { borderPolygons, borderSection, bodySection, buildSeal } from '../src/geometry/pipeline.ts';
 import { TraceEmptyError, combinePolygons, traceImageData, traceLayer } from '../src/geometry/trace.ts';
 import type { ImageDataLike } from '../src/geometry/trace.ts';
 import { createImageLayer } from '../src/core/spec.ts';
@@ -96,7 +96,7 @@ check(
 );
 preparedThin.section.delete();
 
-/* ---------- 4. 间隙：两条 0.5mm 宽、间隔 0.25mm ---------- */
+/* ---------- 4. 宽度去重：gap < minStroke → ridge.min，不再出 gap.min ---------- */
 const bars: Polygon2D[] = [
   { outer: rect(-1.25, -3, -0.75, 3), holes: [] },
   { outer: rect(-0.5, -3, 0, 3), holes: [] },
@@ -109,10 +109,46 @@ const gapViolations = checkPrintability({
   relief: spec.relief,
   print: spec.print,
 });
-const gap = gapViolations.find((v) => v.rule === 'gap.min');
-check(gap !== undefined, '0.25mm 间隙被 gap.min 捕获', gap?.message ?? '未捕获');
-check(Boolean(gap?.highlight?.polygons?.length), 'gap.min 带高亮多边形', `polygons=${gap?.highlight?.polygons?.length ?? 0}`);
+const ridge = gapViolations.find((v) => v.rule === 'ridge.min');
+check(
+  ridge !== undefined && ridge.severity === 'info' && Math.abs(ridge.measured - 0.25) < 0.06,
+  '0.25mm 间隙（< minStroke）由 ridge.min 捕获（info）',
+  `rule=${ridge?.rule ?? '无'} severity=${ridge?.severity ?? '-'} measured=${ridge?.measured ?? '-'}`,
+);
+check(
+  !gapViolations.some((v) => v.rule === 'gap.min'),
+  '同一处宽度不再重复出 gap.min',
+  gapViolations.map((v) => v.rule).join(',') || '无',
+);
+check(Boolean(ridge?.highlight?.polygons?.length), 'ridge.min 带高亮多边形', `polygons=${ridge?.highlight?.polygons?.length ?? 0}`);
 gapSection.delete();
+
+/* ---------- 4b. minStroke ≤ gap < minGap → 只出 gap.min（info） ---------- */
+const wideBars: Polygon2D[] = [
+  { outer: rect(-1.475, -3, -0.975, 3), holes: [] },
+  { outer: rect(-0.525, -3, -0.025, 3), holes: [] },
+];
+const wideGapSection = await sectionFromPolygons(wideBars);
+const wideGapViolations = checkPrintability({
+  section: wideGapSection,
+  solid: null,
+  body: spec.body,
+  relief: spec.relief,
+  // minGap 拉到 0.6，让 0.45mm 落进「比参考值窄、但还没窄过一条挤出线」的中间带
+  print: { ...spec.print, minStrokeMm: 0.4, minGapMm: 0.6 },
+});
+const gapInfo = wideGapViolations.find((v) => v.rule === 'gap.min');
+check(
+  gapInfo !== undefined && gapInfo.severity === 'info' && Math.abs(gapInfo.measured - 0.45) < 0.06,
+  '0.45mm 间隙（minStroke ≤ gap < minGap）由 gap.min 捕获（info）',
+  `rule=${gapInfo?.rule ?? '无'} severity=${gapInfo?.severity ?? '-'} measured=${gapInfo?.measured ?? '-'}`,
+);
+check(
+  !wideGapViolations.some((v) => v.rule === 'ridge.min'),
+  '中间带不出 ridge.min',
+  wideGapViolations.map((v) => v.rule).join(',') || '无',
+);
+wideGapSection.delete();
 
 const preparedGap = await prepareSectionWithReport(bars, { minStrokeMm: 0.4, minGapMm: 0.4, simplifyMm: 0 });
 check(preparedGap.report.weldedGapAreaMm2 > 0, 'prepareSection 闭运算焊掉窄缝', `${preparedGap.report.weldedGapAreaMm2.toFixed(2)}mm²`);
@@ -188,8 +224,84 @@ const wideGroove = await buildSeal(engravedSpec, [{ outer: rect(-4, -4, 4, 4), h
 const wide = (wideGroove.violations ?? []).find((v) => v.rule === 'bridge.span');
 check(wide?.severity === 'warn' && wide.measured >= 7.5, '阴刻 8mm 宽槽：bridge.span warn 且按槽宽计', `measured=${wide?.measured}`);
 
-/* ---------- 9. 图像描摹：方向 / 孔 / 空结果 / 图层放置 ---------- */
-function bitmap(w: number, h: number, ink: (x: number, y: number) => boolean): ImageDataLike {
+/* ---------- 8b. 焊接比例：焊掉太多图案面积才算事故（比料脊宽度有分辨力） ---------- */
+const engravedPrint = { ...spec.print, minStrokeMm: 0.4, minGapMm: 0.3 };
+const engravedSpecMini = { ...spec, relief: { ...spec.relief, mode: 'engraved' as const, depthMm: 1.2 } };
+{
+  // 6 根 0.8mm 宽、间隙 0.1mm 的竖条：闭运算会把 5 条缝全焊上，焊掉约 3mm² / 28.8mm² ≈ 10%
+  const tightBars: Polygon2D[] = [];
+  for (let i = 0; i < 6; i++) {
+    const x0 = -3 + i * 0.9;
+    tightBars.push({ outer: rect(x0, -3, x0 + 0.8, 3), holes: [] });
+  }
+  const tightPrep = await prepareSectionWithReport(tightBars, { minStrokeMm: 0.4, minGapMm: 0.3, simplifyMm: 0 });
+  const tightViolations = checkPrintability({
+    section: tightPrep.section,
+    solid: null,
+    body: engravedSpecMini.body,
+    relief: engravedSpecMini.relief,
+    print: engravedPrint,
+    prepare: tightPrep.report,
+  });
+  const weld = tightViolations.find((v) => v.rule === 'weld.ratio');
+  check(
+    weld?.severity === 'warn' && (weld.measured ?? 0) > 5,
+    '焊接比例：6×0.8mm 竖条（缝 0.1mm）→ weld.ratio warn',
+    `measured=${weld?.measured}% limit=${weld?.limit}% 焊掉 ${tightPrep.report.weldedGapAreaMm2.toFixed(2)}mm² / 前面积 ${tightPrep.report.areaBeforeMm2.toFixed(2)}mm²`,
+  );
+  tightPrep.section.delete();
+
+  // 对照：宽松排布（缝 0.5mm）不该报
+  const looseBars: Polygon2D[] = [];
+  for (let i = 0; i < 6; i++) {
+    const x0 = -3 + i * 1.3;
+    looseBars.push({ outer: rect(x0, -3, x0 + 0.8, 3), holes: [] });
+  }
+  const loosePrep = await prepareSectionWithReport(looseBars, { minStrokeMm: 0.4, minGapMm: 0.3, simplifyMm: 0 });
+  const looseViolations = checkPrintability({
+    section: loosePrep.section,
+    solid: null,
+    body: engravedSpecMini.body,
+    relief: engravedSpecMini.relief,
+    print: engravedPrint,
+    prepare: loosePrep.report,
+  });
+  check(
+    !looseViolations.some((v) => v.rule === 'weld.ratio'),
+    '焊接比例：同样 6 条但缝 0.5mm → 不报 weld.ratio',
+    `焊掉 ${loosePrep.report.weldedGapAreaMm2.toFixed(2)}mm² / 前面积 ${loosePrep.report.areaBeforeMm2.toFixed(2)}mm²`,
+  );
+  loosePrep.section.delete();
+}
+
+/* ---------- 8c. 阴刻深宽比按槽宽：0.5 不报（2.4），0.4 报（3.0） ---------- */
+for (const [widthMm, shouldWarn] of [
+  [0.5, false],
+  [0.4, true],
+] as const) {
+  const grooveSection = await sectionFromPolygons([{ outer: rect(-widthMm / 2, -3, widthMm / 2, 3), holes: [] }]);
+  const grooveViolations = checkPrintability({
+    section: grooveSection,
+    solid: null,
+    body: engravedSpecMini.body,
+    relief: engravedSpecMini.relief,
+    print: engravedPrint,
+  });
+  const aspect = grooveViolations.find((v) => v.rule === 'groove.aspect');
+  check(
+    shouldWarn ? aspect !== undefined : aspect === undefined,
+    `阴刻 ${widthMm}mm 槽 / 1.2 深（比 ${(1.2 / widthMm).toFixed(1)}）${shouldWarn ? '要报' : '不报'} groove.aspect`,
+    `rule=${aspect?.rule ?? '无'} measured=${aspect?.measured ?? '-'} limit=${aspect?.limit ?? '-'}`,
+  );
+  check(
+    !grooveViolations.some((v) => v.rule === 'relief.aspect'),
+    `阴刻 ${widthMm}mm 槽不出 relief.aspect（墙规则不判槽）`,
+    grooveViolations.map((v) => v.rule).join(',') || '无',
+  );
+  grooveSection.delete();
+}
+
+/* ---------- 9. 图像描摹：方向 / 孔 / 空结果 / 图层放置 ---------- */function bitmap(w: number, h: number, ink: (x: number, y: number) => boolean): ImageDataLike {
   const data = new Uint8ClampedArray(w * h * 4);
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
@@ -247,6 +359,32 @@ const overlapMesh = await buildSeal(
 const overlap = (overlapMesh.violations ?? []).find((v) => v.rule === 'overlap.samedepth');
 check(overlap?.severity === 'warn' && overlap.measured >= 10, '文字/图像同深度重叠 → overlap.samedepth warn', `measured=${overlap?.measured}mm²`);
 check(Boolean(overlap?.highlight?.bbox), '重叠提示带高亮框', '');
+
+/* ---------- 11. 边框环 ---------- */
+const squareBody = { ...baseSpec.body, cornerRadiusMm: 0 };
+const baseSec = bodySection(await getManifold(), squareBody);
+const thinRing = borderSection(baseSec, { style: 'thin', widthMm: 1.2, insetMm: 1.2 });
+check(thinRing !== null && Math.abs(thinRing.area() - 126.72) < 2, 'thin 边框面积 ≈126.7mm²', thinRing ? `${thinRing.area().toFixed(2)}` : 'null');
+thinRing?.delete();
+const doubleRing = borderSection(baseSec, { style: 'double', widthMm: 1.2, insetMm: 1.2 });
+check(doubleRing !== null && Math.abs(doubleRing.area() - 230.4) < 3, 'double 边框 = 两圈', doubleRing ? `${doubleRing.area().toFixed(2)}` : 'null');
+doubleRing?.delete();
+check(borderSection(baseSec, { style: 'none', widthMm: 1.2, insetMm: 1.2 }) === null, 'style=none 不生成边框');
+const thickRing = borderSection(baseSec, { style: 'thick', widthMm: 1.6, insetMm: 1.2 });
+check(thickRing !== null && Math.abs(thickRing.area() - 166.4) < 2, 'thick 按 widthMm=1.6 实算，无隐藏下限', thickRing ? `${thickRing.area().toFixed(1)}mm²` : 'null');
+thickRing?.delete();
+
+const previewRing = await borderPolygons(squareBody);
+const previewArea = previewRing.reduce(
+  (sum, p) => sum + Math.abs(shoelace(p.outer)) - p.holes.reduce((s, h) => s + Math.abs(shoelace(h)), 0),
+  0,
+);
+check(previewRing.length === 1 && Math.abs(previewArea - 126.72) < 2, 'borderPolygons 与实体边框同源同面积', `${previewArea.toFixed(1)}mm²`);
+baseSec.delete();
+
+const noBorder = await buildSeal({ ...engravedSpec, body: { ...engravedSpec.body, cornerRadiusMm: 0, border: { style: 'none', widthMm: 1.2, insetMm: 1.2 } } }, [sealRect]);
+const withBorder = await buildSeal({ ...engravedSpec, body: { ...engravedSpec.body, cornerRadiusMm: 0, border: { style: 'thin', widthMm: 1.2, insetMm: 1.2 } } }, [sealRect]);
+check(withBorder.status === 'NoError' && withBorder.triangleCount > noBorder.triangleCount, '边框参与实体：面数增加且 NoError', `${noBorder.triangleCount} → ${withBorder.triangleCount}`);
 console.log(failed === 0 ? '\n全部通过' : `\n${failed} 项失败`);
 process.exit(failed === 0 ? 0 : 1);
 
