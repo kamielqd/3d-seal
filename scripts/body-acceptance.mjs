@@ -136,7 +136,8 @@ const HOOK = `
     return { ok:true, id:d.id, triangleCount:m.triangleCount, status:m.status,
       zMin:minz, zMax:maxz, height:maxz-minz,
       footprintX:maxx-minx, footprintY:maxy-miny,
-      footprint:Math.max(maxx-minx,maxy-miny), volume:Math.abs(vol) };
+      footprint:Math.max(maxx-minx,maxy-miny), volume:Math.abs(vol),
+      violations: Array.isArray(m.violations) ? m.violations.map(v=>({rule:v.rule, severity:v.severity})) : [] };
   };
   window.__statusText = function () {
     const divs=[...document.querySelectorAll('div')];
@@ -246,6 +247,10 @@ async function main() {
       const motherVol = mother[st.id];
       const removed = engravedVol != null ? motherVol - engravedVol : null;
 
+      const viol = (m && m.violations) || [];
+      const violStr = viol.length ? viol.map((v) => `${v.rule}(${v.severity})`).join('; ') : '-';
+      const blocking = viol.some((v) => v.severity === 'error');
+
       // 判定
       const pass =
         status === 'NoError' &&
@@ -267,13 +272,15 @@ async function main() {
         engravedVolume: engravedVol != null ? +engravedVol.toFixed(1) : null,
         removedVolume: removed != null ? +removed.toFixed(1) : null,
         status,
+        violations: violStr,
+        blocking,
         ms,
         pass,
       };
       rows.push(row);
       console.log(
         `${st.id.padEnd(9)} ${tx.key.padEnd(6)} tri=${String(tri).padStart(5)} foot=${row.footprint} h=${row.height}(exp${st.expHeight}) ` +
-          `母=${row.motherVolume} 刻掉=${row.removedVolume} zMin=${row.zMin} ${status} ${ms}ms ${pass ? 'PASS' : 'FAIL'}`,
+          `母=${row.motherVolume} 刻掉=${row.removedVolume} zMin=${row.zMin} ${status} viol=[${violStr}] blocking=${blocking} ${ms}ms ${pass ? 'PASS' : 'FAIL'}`,
       );
 
       // 每种样式第一组（4字）截一张
