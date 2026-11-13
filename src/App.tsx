@@ -17,6 +17,7 @@ import { to3mfBlob } from './export/threemf';
 import { listFonts, DEFAULT_FONT_ID } from './layout/fonts';
 import { checkMissing } from './layout/missing';
 import { renderPreviewToDataURL } from './render/preview2d';
+import About from './ui/About';
 import type { BuildResponse, ImagePayload } from './worker/geometry.worker';
 import type { SolidMesh } from './geometry/types';
 import type { Violation } from './geometry/printability';
@@ -34,6 +35,7 @@ export default function App() {
   /** 图像图层 id → 像素；不进 state，避免每次拖参数都深拷贝几 MB */
   const imagesRef = useRef<Map<string, ImageData>>(new Map());
   const [imageVersion, setImageVersion] = useState(0);
+  const [showAbout, setShowAbout] = useState(false);
 
   const workerRef = useRef<Worker | null>(null);
   const workerErrRef = useRef<string>('');
@@ -418,6 +420,32 @@ export default function App() {
               />
             </Field>
 
+            <Field label={`位置 X ${l.anchor.x.toFixed(2)}　Y ${l.anchor.y.toFixed(2)}（相对章面半径）`}>
+              <input
+                type="range" min={-1} max={1} step={0.02} value={l.anchor.x}
+                onChange={(e) => updateImage(l.id, (x) => { x.anchor.x = Number(e.target.value); })}
+                style={{ width: '100%' }}
+              />
+              <input
+                type="range" min={-1} max={1} step={0.02} value={l.anchor.y}
+                onChange={(e) => updateImage(l.id, (x) => { x.anchor.y = Number(e.target.value); })}
+                style={{ width: '100%' }}
+              />
+            </Field>
+
+            <Field label={`旋转 ${l.transform.rotateDeg}°　缩放 ${l.transform.scale.toFixed(2)}`}>
+              <input
+                type="range" min={-180} max={180} step={1} value={l.transform.rotateDeg}
+                onChange={(e) => updateImage(l.id, (x) => { x.transform.rotateDeg = Number(e.target.value); })}
+                style={{ width: '100%' }}
+              />
+              <input
+                type="range" min={0.2} max={2} step={0.05} value={l.transform.scale}
+                onChange={(e) => updateImage(l.id, (x) => { x.transform.scale = Number(e.target.value); })}
+                style={{ width: '100%' }}
+              />
+            </Field>
+
             <Field label={l.trace.autoThreshold ? '阈值：自动（Otsu）' : `阈值 ${l.trace.threshold.toFixed(2)}`}>
               <input
                 type="range" min={0.05} max={0.95} step={0.05} value={l.trace.threshold}
@@ -527,6 +555,15 @@ export default function App() {
         )}
 
         {error && <p style={{ color: '#b3261e', fontSize: 12, marginTop: 12 }}>{error}</p>}
+
+        <div style={{ marginTop: 18, paddingTop: 12, borderTop: '1px solid #eeeae1' }}>
+          <button
+            onClick={() => setShowAbout(true)}
+            style={{ ...miniBtnStyle, padding: '5px 10px' }}
+          >
+            字体与授权
+          </button>
+        </div>
       </aside>
 
       <main style={{ flex: 1, display: 'flex', minWidth: 0 }}>
@@ -564,6 +601,7 @@ export default function App() {
           </div>
         </div>
       </main>
+      {showAbout && <About onClose={() => setShowAbout(false)} />}
     </div>
   );
 }

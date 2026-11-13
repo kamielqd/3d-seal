@@ -85,14 +85,13 @@ const BUILTIN: FontDef[] = [
     bundled: true,
   },
   {
-    // 思源黑体与得意黑定位重叠，首版不做，保留登记以便后续补子集
     id: 'source-han-sans',
     name: '思源黑体 Source Han Sans',
-    filePath: 'fonts/source-han-sans/source-han-sans-subset.ttf',
+    filePath: 'fonts/source-han-sans/source-han-sans-subset.otf',
     license: 'OFL-1.1',
     licenseUrl: 'https://github.com/adobe-fonts/source-han-sans',
     author: 'Adobe',
-    bundled: false,
+    bundled: true,
   },
 ];
 

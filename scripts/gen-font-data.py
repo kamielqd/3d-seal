@@ -106,6 +106,30 @@ def cmap_chars(paths):
     return "".join(sorted(cs))
 
 
+def gb2312_level1():
+    out = []
+    for b1 in range(0xB0, 0xD8):
+        for b2 in range(0xA1, 0xFF):
+            try:
+                out.append(bytes([b1, b2]).decode("gb2312"))
+            except UnicodeDecodeError:
+                pass
+    return out
+
+
+def build_simplified_subset(src, chars, out_path):
+    """把任意字体按给定简体字集 + ASCII + 标点做子集（用于思源黑体等单文件字体）。"""
+    cmap = TTFont(src).getBestCmap()
+    targets = {ord(c) for c in chars if ord(c) in cmap}
+    uni = sorted(targets | ASCII | PUNCT)
+    f = TTFont(src)
+    s = subset.Subsetter(options=subset.Options())
+    s.populate(unicodes=uni)
+    s.subset(f)
+    f.save(out_path)
+    return len(targets), os.path.getsize(out_path)
+
+
 def main():
     b1 = read_chars("shuowen-block1.txt")
     b2 = read_chars("shuowen-block2.txt")
@@ -113,6 +137,14 @@ def main():
     p2 = os.path.join(OUT, "shuowen-block2.ttf")
     n1, sz1 = build_block(b1, p1)
     n2, sz2 = build_block(b2, p2)
+
+    # 思源黑体（可选）：SOURCE_HAN_SANS 指向 SourceHanSansCN-Regular.otf，按 GB2312 一级 3755 子集化
+    shs_out = os.path.join(FONTS, "source-han-sans", "source-han-sans-subset.otf")
+    shs_src = os.environ.get("SOURCE_HAN_SANS")
+    if shs_src and os.path.exists(shs_src):
+        os.makedirs(os.path.dirname(shs_out), exist_ok=True)
+        shs_n, shs_sz = build_simplified_subset(shs_src, gb2312_level1(), shs_out)
+        print(f"source-han-sans: {shs_n} chars -> {shs_sz} bytes ({shs_sz/1024/1024:.2f}MB)")
 
     units = TTFont(SRC)["head"].unitsPerEm
     manifest = {
@@ -148,6 +180,8 @@ def main():
         "lxgw-seal": cmap_chars([os.path.join(FONTS, "lxgw-seal", "lxgw-seal.ttf")]),
         "shuowen": cmap_chars([p1, p2]),
     }
+    if os.path.exists(shs_out):
+        coverage["source-han-sans"] = cmap_chars([shs_out])
     cov_path = os.path.join(DATA, "coverage.json")
     with open(cov_path, "w", encoding="utf-8", newline="") as f:
         json.dump(coverage, f, ensure_ascii=False, separators=(",", ":"))
