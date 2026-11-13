@@ -90,6 +90,12 @@ export interface TextLayer {
   layout: TextLayout;
   fontSizeMm: number;
   letterSpacingMm: number;
+  /**
+   * 文字塞不下章面时自动等比缩字号与字距（默认开）。
+   * 缩过之后包围盒会落在章面内，`pattern.bounds` 不再报错，导出也不会被禁用；
+   * 实际生效的字号由 `layoutFlatWithFit()` 回传，面板上要如实显示。
+   */
+  autoFit?: boolean;
   lineHeight: number;
   /** ring 专用 */
   ringStartDeg: number;

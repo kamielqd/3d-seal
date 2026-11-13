@@ -11,7 +11,7 @@ import {
   type PrintOrientation,
   type SealSpec,
 } from './core/spec.ts';
-import { layoutFlatPolygons } from './core/layout-bridge.ts';
+import { layoutFlatWithFit, type LayerFit } from './core/layout-bridge.ts';
 import { fromLayoutPolygons } from './core/polygon-bridge.ts';
 import { toStlBlob } from './export/stl.ts';
 import { to3mfBlob } from './export/threemf.ts';
@@ -35,6 +35,8 @@ export default function App() {
   const [stage, setStage] = useState<string>('');
   const [previewUrl, setPreviewUrl] = useState<string>('');
   const [violations, setViolations] = useState<Violation[]>([]);
+  /** 每个文字图层的实际字号（自动适应章面后可能小于设定值） */
+  const [fits, setFits] = useState<LayerFit[]>([]);
   /** 图像图层 id → 像素；不进 state，避免每次拖参数都深拷贝几 MB */
   const imagesRef = useRef<Map<string, ImageData>>(new Map());
   const [imageVersion, setImageVersion] = useState(0);
@@ -104,8 +106,9 @@ export default function App() {
       setError('');
       const t0 = performance.now();
       try {
-        const flat = await layoutFlatPolygons(spec);
+        const { polygons: flat, fits: layerFits } = await layoutFlatWithFit(spec);
         if (cancelled) return;
+        setFits(layerFits);
         // 盖印效果：版式输出的是**可读**轮廓，所以 mirror=false（翻一次就印反了）
         const paintInk = (rings: typeof flat) => {
           try {
@@ -535,6 +538,33 @@ export default function App() {
             style={{ width: '100%' }}
           />
         </Field>
+
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, marginBottom: 10, cursor: 'pointer' }}>
+          <input
+            type="checkbox"
+            checked={!(textLayer && textLayer.kind === 'text' && textLayer.autoFit === false)}
+            onChange={(e) =>
+              patch((s) => {
+                const l = s.layers.find((x) => x.kind === 'text');
+                if (l && l.kind === 'text') l.autoFit = e.target.checked;
+              })
+            }
+          />
+          自动适应章面（字多时等比缩小，塞不下的字不会探出章面）
+        </label>
+
+        {fits.some((f) => f.fitted) && (
+          <div style={{ ...warnStyle, borderColor: '#e6ded0', background: '#faf7f1' }}>
+            {fits
+              .filter((f) => f.fitted)
+              .map((f) => (
+                <div key={f.layerId} style={{ lineHeight: 1.5 }}>
+                  字号 {f.requestedFontMm}mm 排不下，已按章面缩到{' '}
+                  <strong>{f.effectiveFontMm}mm</strong>。想要更大就减少字数、放大章面，或关掉自动适应自己调。
+                </div>
+              ))}
+          </div>
+        )}
 
         <Field label="图像（可选，图片不出本机）">
           <input
