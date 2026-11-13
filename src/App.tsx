@@ -4,11 +4,14 @@ import {
   BODY_STYLES,
   createDefaultSpec,
   createImageLayer,
+  createTextLayer,
+  cloneLayer,
   serializeSpec,
   deserializeSpec,
   type BodyShape,
   type BodyStyleId,
   type ImageLayer,
+  type Layer,
   type SealSpec,
 } from './core/spec.ts';
 import { layoutFlatWithFit, type LayerFit } from './core/layout-bridge.ts';
@@ -19,6 +22,7 @@ import { listFonts, DEFAULT_FONT_ID } from './layout/fonts.ts';
 import { checkMissing } from './layout/missing.ts';
 import { renderPreviewToDataURL } from './render/preview2d.ts';
 import About from './ui/About.tsx';
+import ElementList from './ui/ElementList.tsx';
 import { BODY_THUMBS } from './ui/body-thumbs.ts';
 import { ORNAMENT_THUMBS } from './ui/ornament-thumbs.ts';
 import { PRESETS } from './core/presets.ts';
@@ -43,6 +47,8 @@ export default function App() {
   const [stats, setStats] = useState<BuildStats | null>(null);
   /** 每个文字图层的实际字号（自动适应章面后可能小于设定值） */
   const [fits, setFits] = useState<LayerFit[]>([]);
+  /** 元素清单里选中的层；为空时退回第一层 */
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   /** 图像图层 id → 像素；不进 state，避免每次拖参数都深拷贝几 MB */
   const imagesRef = useRef<Map<string, ImageData>>(new Map());
   const [imageVersion, setImageVersion] = useState(0);
@@ -195,9 +201,19 @@ export default function App() {
     };
   }, [spec, imageVersion]);
 
-  const textLayer = spec.layers.find((l) => l.kind === 'text');
-  const fontId = textLayer && textLayer.kind === 'text' ? textLayer.fontId : DEFAULT_FONT_ID;
-  const fontText = textLayer && textLayer.kind === 'text' ? textLayer.text : '';
+  /** 选中的层；选中的层被删掉时退回第一层，面板不会空窗 */
+  const selectedLayer: Layer | undefined =
+    spec.layers.find((l) => l.id === selectedId) ?? spec.layers[0];
+  /** 只有选中文字层时才出文字属性；选中图像时文字面板整体收起 */
+  const textLayer = selectedLayer && selectedLayer.kind === 'text' ? selectedLayer : undefined;
+  const selectedImage =
+    selectedLayer && selectedLayer.kind === 'image' ? selectedLayer : undefined;
+  /** 属性面板里所有「改当前这个文字层」的操作都按 id 定位，不再靠「第一个文字层」 */
+  const editedId = textLayer?.id ?? null;
+  /** 当前选中文字层的自动适应结果（多层时只显示这一层，不混在一起） */
+  const currentFit = textLayer ? fits.find((f) => f.layerId === textLayer.id) : undefined;
+  const fontId = textLayer ? textLayer.fontId : DEFAULT_FONT_ID;
+  const fontText = textLayer ? textLayer.text : '';
   const missing = useMemo(() => checkMissing(fontText, fontId), [fontText, fontId]);
   const printIssues = violations.filter((v) => v.severity !== 'info');
   /** 提示级：不影响出实体/导出，但用户该知道（如四字印必然出现的 0.17mm 窄缝） */
@@ -241,10 +257,70 @@ export default function App() {
       const layer = createImageLayer(URL.createObjectURL(file));
       imagesRef.current.set(layer.id, data);
       patch((s) => { s.layers.push(layer); });
+      setSelectedId(layer.id);
       setImageVersion((v) => v + 1);
     } catch (e) {
       setError(`图像读取失败：${e instanceof Error ? e.message : String(e)}`);
     }
+  };
+
+  /** 再加一个文字层：位置错开一点，否则两层叠在正中看不出是两层 */
+  const addTextLayer = () => {
+    const layer = createTextLayer({ anchor: { x: 0, y: 0.28 } });
+    patch((s) => { s.layers.push(layer); });
+    setSelectedId(layer.id);
+  };
+
+  const duplicateLayer = (id: string) => {
+    const src = spec.layers.find((l) => l.id === id);
+    if (!src) return;
+    const copy = cloneLayer(src);
+    // 错开一点：完全叠在原地时看起来像「复制没生效」，而且盖印预览里也分不出两层
+    copy.anchor = {
+      x: Math.max(-1, Math.min(1, src.anchor.x + 0.06)),
+      y: Math.max(-1, Math.min(1, src.anchor.y + 0.06)),
+    };
+    // 图像层的像素按 id 存，复制出来的层要共用同一份，否则新层描摹不出东西
+    if (src.kind === 'image') {
+      const px = imagesRef.current.get(src.id);
+      if (px) imagesRef.current.set(copy.id, px);
+    }
+    patch((s) => {
+      const i = s.layers.findIndex((l) => l.id === id);
+      s.layers.splice(i + 1, 0, copy);
+    });
+    setSelectedId(copy.id);
+    if (src.kind === 'image') setImageVersion((v) => v + 1);
+  };
+
+  const deleteLayer = (id: string) => {
+    const target = spec.layers.find((l) => l.id === id);
+    if (!target) return;
+    // 至少留一层文字：章面上一片空白时几何会报「没有可生成的内容」，不如根本删不掉
+    const textCount = spec.layers.filter((l) => l.kind === 'text').length;
+    if (target.kind === 'text' && textCount <= 1) return;
+    if (target.kind === 'image') imagesRef.current.delete(id);
+    const rest = spec.layers.filter((l) => l.id !== id);
+    patch((s) => { s.layers = s.layers.filter((l) => l.id !== id); });
+    if (selectedId === id) setSelectedId(rest[0]?.id ?? null);
+    if (target.kind === 'image') setImageVersion((v) => v + 1);
+  };
+
+  const moveLayer = (id: string, dir: -1 | 1) => {
+    patch((s) => {
+      const i = s.layers.findIndex((l) => l.id === id);
+      const j = i + dir;
+      if (i < 0 || j < 0 || j >= s.layers.length) return;
+      const [row] = s.layers.splice(i, 1);
+      s.layers.splice(j, 0, row);
+    });
+  };
+
+  const updateLayer = (id: string, fn: (l: Layer) => void) => {
+    patch((s) => {
+      const l = s.layers.find((x) => x.id === id);
+      if (l) fn(l);
+    });
   };
 
   const share = async () => {
@@ -530,12 +606,25 @@ export default function App() {
           />
         </Field>
 
+        <ElementList
+          layers={spec.layers}
+          selectedId={selectedLayer?.id ?? null}
+          onSelect={setSelectedId}
+          onAddText={addTextLayer}
+          onAddImage={(f) => { void pickImage(f); }}
+          onDelete={deleteLayer}
+          onDuplicate={duplicateLayer}
+          onMove={moveLayer}
+        />
+
+        {textLayer && (
+          <>
         <Field label="文字">
           <input
             value={textLayer && textLayer.kind === 'text' ? textLayer.text : ''}
             onChange={(e) =>
               patch((s) => {
-                const l = s.layers.find((x) => x.kind === 'text');
+                const l = s.layers.find((x) => x.id === editedId);
                 if (l && l.kind === 'text') l.text = e.target.value;
               })
             }
@@ -568,7 +657,7 @@ export default function App() {
             value={fontId}
             onChange={(e) =>
               patch((s) => {
-                const l = s.layers.find((x) => x.kind === 'text');
+                const l = s.layers.find((x) => x.id === editedId);
                 if (l && l.kind === 'text') l.fontId = e.target.value;
               })
             }
@@ -585,7 +674,7 @@ export default function App() {
             value={textLayer && textLayer.kind === 'text' ? textLayer.layout : 'horizontal'}
             onChange={(e) =>
               patch((s) => {
-                const l = s.layers.find((x) => x.kind === 'text');
+                const l = s.layers.find((x) => x.id === editedId);
                 if (l && l.kind === 'text') l.layout = e.target.value as typeof l.layout;
               })
             }
@@ -604,7 +693,7 @@ export default function App() {
               <button
                 onClick={() =>
                   patch((s) => {
-                    const l = s.layers.find((x) => x.kind === 'text');
+                    const l = s.layers.find((x) => x.id === editedId);
                     if (l && l.kind === 'text') l.ringOrnament = 'none';
                   })
                 }
@@ -619,7 +708,7 @@ export default function App() {
                   title={id === 'star' ? '五角星' : '六芒星'}
                   onClick={() =>
                     patch((s) => {
-                      const l = s.layers.find((x) => x.kind === 'text');
+                      const l = s.layers.find((x) => x.id === editedId);
                       if (l && l.kind === 'text') l.ringOrnament = id;
                     })
                   }
@@ -641,7 +730,7 @@ export default function App() {
             type="range" min={3} max={14} step={0.5}
             value={textLayer && textLayer.kind === 'text' ? textLayer.fontSizeMm : 7}
             onChange={(e) => patch((s) => {
-              const l = s.layers.find((x) => x.kind === 'text');
+              const l = s.layers.find((x) => x.id === editedId);
               if (l && l.kind === 'text') l.fontSizeMm = Number(e.target.value);
             })}
             style={{ width: '100%' }}
@@ -654,7 +743,7 @@ export default function App() {
             checked={!(textLayer && textLayer.kind === 'text' && textLayer.autoFit === false)}
             onChange={(e) =>
               patch((s) => {
-                const l = s.layers.find((x) => x.kind === 'text');
+                const l = s.layers.find((x) => x.id === editedId);
                 if (l && l.kind === 'text') l.autoFit = e.target.checked;
               })
             }
@@ -662,17 +751,45 @@ export default function App() {
           自动适应章面（字多时等比缩小，塞不下的字不会探出章面）
         </label>
 
-        {fits.some((f) => f.fitted) && (
+        {currentFit?.fitted && (
           <div style={{ ...warnStyle, borderColor: '#e6ded0', background: '#faf7f1' }}>
-            {fits
-              .filter((f) => f.fitted)
-              .map((f) => (
-                <div key={f.layerId} style={{ lineHeight: 1.5 }}>
-                  字号 {f.requestedFontMm}mm 排不下，已按章面缩到{' '}
-                  <strong>{f.effectiveFontMm}mm</strong>。想要更大就减少字数、放大章面，或关掉自动适应自己调。
-                </div>
-              ))}
+            这一层字号 {currentFit.requestedFontMm}mm 排不下，已按章面缩到{' '}
+            <strong>{currentFit.effectiveFontMm}mm</strong>。想要更大就减少字数、放大章面，或关掉自动适应自己调。
           </div>
+        )}
+
+        <Field label={`位置 X ${textLayer.anchor.x.toFixed(2)}　Y ${textLayer.anchor.y.toFixed(2)}（0 = 正中，±1 ≈ 章面四分之三处）`}>
+          <input
+            type="range" min={-1} max={1} step={0.02} value={textLayer.anchor.x}
+            onChange={(e) => updateLayer(textLayer.id, (l) => { if (l.kind === 'text') l.anchor.x = Number(e.target.value); })}
+            style={{ width: '100%' }}
+          />
+          <input
+            type="range" min={-1} max={1} step={0.02} value={textLayer.anchor.y}
+            onChange={(e) => updateLayer(textLayer.id, (l) => { if (l.kind === 'text') l.anchor.y = Number(e.target.value); })}
+            style={{ width: '100%' }}
+          />
+          <button
+            onClick={() => updateLayer(textLayer.id, (l) => { l.anchor.x = 0; l.anchor.y = 0; })}
+            style={{ ...miniBtnStyle, marginTop: 4 }}
+          >
+            回到正中
+          </button>
+        </Field>
+
+        <Field label={`旋转 ${textLayer.transform.rotateDeg}°　缩放 ${textLayer.transform.scale.toFixed(2)}`}>
+          <input
+            type="range" min={-180} max={180} step={1} value={textLayer.transform.rotateDeg}
+            onChange={(e) => updateLayer(textLayer.id, (l) => { l.transform.rotateDeg = Number(e.target.value); })}
+            style={{ width: '100%' }}
+          />
+          <input
+            type="range" min={0.2} max={2} step={0.05} value={textLayer.transform.scale}
+            onChange={(e) => updateLayer(textLayer.id, (l) => { l.transform.scale = Number(e.target.value); })}
+            style={{ width: '100%' }}
+          />
+        </Field>
+          </>
         )}
 
         <Field label="图像（可选，图片不出本机）">
@@ -688,7 +805,7 @@ export default function App() {
           />
         </Field>
 
-        {imageLayers.map((l) => (
+        {imageLayers.filter((l) => l.id === selectedImage?.id).map((l) => (
           <div key={l.id} style={cardStyle}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
               <strong style={{ fontSize: 12 }}>图像图层</strong>

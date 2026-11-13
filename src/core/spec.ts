@@ -240,8 +240,7 @@ export function createTextLayer(init: Partial<TextLayer> = {}): TextLayer {
   };
 }
 
-export function createImageLayer(src: string, init: Partial<ImageLayer> = {}): ImageLayer {
-  return {
+export function createImageLayer(src: string, init: Partial<ImageLayer> = {}): ImageLayer {  return {
     kind: 'image',
     id: uid('i'),
     src,
@@ -259,10 +258,20 @@ export function createImageLayer(src: string, init: Partial<ImageLayer> = {}): I
   };
 }
 
+/**
+ * 复制一层：深拷贝并换新 id。
+ * 图像层只复制 `src` 字符串（同一个 blob URL），不重复占内存；
+ * 像素本体在 App 里按 id 存着，复制后要另存一份，由调用方负责。
+ */
+export function cloneLayer(layer: Layer): Layer {
+  const copy = structuredClone(layer);
+  copy.id = uid(layer.kind === 'text' ? 't' : 'i');
+  return copy;
+}
+
 /* ------------------------------------------------------------------ */
 /* 序列化：分享链接用（不含图片二进制）                               */
 /* ------------------------------------------------------------------ */
-
 export function serializeSpec(spec: SealSpec): string {
   const stripped: SealSpec = {
     ...spec,
