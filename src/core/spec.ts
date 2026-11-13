@@ -50,6 +50,12 @@ export interface BodyConfig {
   handleDiameterMm: number;
   /** 选了外部主体样式就忽略上面的 shape/border/handle，只保留 sizeMm（底面尺寸） */
   styleId?: BodyKind;
+  /**
+   * 总高上限（mm）。只对瘦高的圆柱 / 立方柱有意义：缩放取小
+   * `min(sizeMm / 足迹, maxHeightMm / 源高)`，所以章面尺寸会变成**上限**——
+   * 压矮总高会连带把印面缩下来，UI 必须显示实际值。
+   */
+  maxHeightMm?: number;
 }
 
 /** 主体样式清单（UI 用；几何侧按 id 去 public/bodies 取对应 STL）。 */

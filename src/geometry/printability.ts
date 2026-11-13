@@ -26,6 +26,7 @@ export type PrintRuleId =
   | 'gap.min'
   | 'ridge.min'
   | 'weld.ratio'
+  | 'base.thickness'
   | 'island.min'
   | 'relief.aspect'
   | 'groove.aspect'
@@ -90,8 +91,11 @@ const FDM: Preset = {
   reliefRatio: 2,
   grooveRatio: 2.5,
   checkOverhang: true,
-  minSizeMm: 10,
-  maxSizeMm: 60,
+  // 10mm 实测：四字自动缩到 1.29mm 字号、闭运算焊掉 53.84%（island.min 也报）；
+  // 两字只剩 2.69mm、焊 26%。这种尺寸给用户等于给一个印不出来的配置，提到 15mm。
+  minSizeMm: 15,
+  // 用户要 10cm：上限从 60 提到 100。代价由 base.thickness 规则说明（翘边）。
+  maxSizeMm: 100,
   minHandleMm: 8,
 };
 
@@ -476,8 +480,9 @@ function check3D(mesh: SolidMesh, body: BodyConfig, relief: ReliefConfig, proces
     // 阳刻：水平朝下、又不贴床的面 = 整片底板悬空，面积大了 FDM 架不住。
     // 阴刻由 2D 的「最宽单条槽」判断，不走这条面积判据。
     if (relief.mode === 'raised' && over.bridgeAreaMm2 > 20) {
-      // 阳刻 + FDM + 有手柄：贴床时底板整片悬空、1.2mm 缝里拆不掉支撑 → 不允许导出
-      const blocks = relief.mode === 'raised' && process === 'fdm' && body.handle !== 'none';
+      // 阳刻 + FDM：贴床时底板整片悬空、1.2mm 缝里拆不掉支撑 → 不允许导出。
+      // （原来还要判「有没有手柄」，手柄整套已删除，这里不再带这个条件。）
+      const blocks = relief.mode === 'raised' && process === 'fdm';
       out.push({
         rule: 'bridge.span',
         severity: blocks ? 'error' : 'warn',
@@ -663,6 +668,31 @@ function checkSize(body: BodyConfig, preset: Preset): Violation[] {
       limit: 100,
       message: `章面面积 ${round2(area)}mm² 偏小：首层容易翘边，建议加 brim。`,
     });
+  }
+
+  // 平板底板的翘边：FDM 上跨厚比（章面跨度 / 底板厚）超过 25 就开始翘。
+  // 30mm/2.5mm = 12（正常），60/2.5 = 24（临界），100/2.5 = 40（会翘）。
+  // 只对 4 个内置模型跳过：它们是实心模型，没有「底板厚度」这个概念；
+  // 测试片（plate）是参数化平板，恰恰要用这条判。
+  const styleId = (body as BodyConfig & { readonly styleId?: unknown }).styleId;
+  const isLibraryModel = styleId !== undefined && styleId !== 'plate';
+  if (!isLibraryModel) {
+    const span = Math.max(1, body.sizeMm);
+    const thickness = Math.max(0.8, body.baseThicknessMm);
+    const slenderness = span / thickness;
+    if (slenderness > 25) {
+      const suggest = Math.ceil((span / 25) * 10) / 10;
+      out.push({
+        rule: 'base.thickness',
+        severity: 'warn',
+        measured: round2(slenderness),
+        limit: 25,
+        message:
+          `章面 ${round2(span)}mm / 底板 ${round2(thickness)}mm（跨厚比 ${round2(slenderness)}）：` +
+          `FDM 打这么大的平板底板容易翘边。建议底板 ≥ ${suggest}mm（跨厚比 ≤25），或缩小章面、加 brim。`,
+        fix: 'fix:thicken',
+      });
+    }
   }
 
   if (body.handle !== 'none' && body.handleDiameterMm < preset.minHandleMm) {

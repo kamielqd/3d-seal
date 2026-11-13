@@ -34,16 +34,16 @@ function baseSpec(overrides: Partial<SealSpec> = {}): SealSpec {
     ...spec,
     body: {
       ...spec.body,
+      // 这整套断言测的是 z 约定/镜像/形状，用参数化测试片（plate）最直接。
+      // 4 个内置模型另有 geometry-regression 的 12.x 覆盖。
+      styleId: 'plate',
       shape: 'square',
       sizeMm: 30,
       cornerRadiusMm: 2,
       baseThicknessMm: 4,
-      // 图案/镜像校验一律用无手柄章体：手柄比章面高，会污染 z 极值与重心
       handle: 'none',
       handleHeightMm: 14,
       handleDiameterMm: 14,
-      // 边框和图案同深度、会一起出现在 z 极值层里（27.6mm 的框盖住 6mm 的图案），
-      // 这几条断言要测的是图案本身，所以关掉边框。
       border: { style: 'none' as const, widthMm: 1.2, insetMm: 1.2 },
     },
     relief: { mode: 'raised', depthMm: 1.2 },
@@ -195,6 +195,7 @@ async function main(): Promise<void> {
   // 所有期望值都从这两条推：底板顶面 = depth + base（阳刻）/ base（阴刻）。
   const spec = baseSpec();
   const sizeMm = spec.body.sizeMm;
+  // 测试片厚度就是 baseThicknessMm（spec 的 BodyConfig 里没有单独的 thicknessMm）
   const baseT = spec.body.baseThicknessMm;
   const depth = spec.relief.depthMm;
   const plateTopRaised = depth + baseT;
@@ -279,26 +280,8 @@ async function main(): Promise<void> {
   ]);
   check('六边形章 status', hex.status === 'NoError', hex.status);
 
-  // ---- 手柄：坐在底板背面（z = 底板顶面），向下嵌 base 与底板搭接 ----
-  const handleHeightMm = 14;
-  const handleBody = { ...spec.body, handle: 'knob' as const, handleHeightMm };
-  const withHandle = await buildSeal(baseSpec({ body: handleBody }), [rectAt(6, 0, 5, 5)]);
-  const bHandle = bounds(withHandle);
-  // 与 handleSolid 同一条公式：嵌深 base = min(半径*0.9, baseThickness)
-  const knobRadius = handleBody.handleDiameterMm / 2;
-  const embed = Math.max(0.6, Math.min(knobRadius * 0.9, baseT));
-  const expectedHandleTop = plateTopRaised - embed + handleHeightMm;
-  check('手柄章 status', withHandle.status === 'NoError', withHandle.status);
-  check(
-    '手柄顶面 = 底板顶面 − 嵌深 + 手柄高',
-    Math.abs(bHandle.max[2] - expectedHandleTop) < 0.05,
-    `zMax=${bHandle.max[2].toFixed(2)} 期望=${expectedHandleTop.toFixed(2)}（${plateTopRaised} − ${embed.toFixed(2)} + ${handleHeightMm}）`,
-  );
-  check(
-    '手柄不超出章面 XY',
-    Math.abs(bHandle.max[0]) <= sizeMm / 2 + 0.01 && Math.abs(bHandle.min[0]) <= sizeMm / 2 + 0.01,
-    `x=${bHandle.min[0].toFixed(2)}~${bHandle.max[0].toFixed(2)} 上限=±${(sizeMm / 2).toFixed(1)}`,
-  );
+  // 手柄整条路径已按产品决策删除（主体只用内置模型或测试片），
+  // 原先「手柄顶面 / 手柄不超出章面」两条断言随之作废。
 
   // ---- 导出 ----
   const stl = toBinaryStl(raised, 'verify');

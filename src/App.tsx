@@ -25,6 +25,7 @@ import { PRESETS } from './core/presets.ts';
 import type { BuildResponse, ImagePayload } from './worker/geometry.worker.ts';
 import type { SolidMesh } from './geometry/types.ts';
 import type { Violation } from './geometry/printability.ts';
+import type { BuildStats } from './geometry/pipeline.ts';
 
 export default function App() {
   const [spec, setSpec] = useState<SealSpec>(() => specFromHash() ?? createDefaultSpec());
@@ -38,6 +39,8 @@ export default function App() {
   const [stage, setStage] = useState<string>('');
   const [previewUrl, setPreviewUrl] = useState<string>('');
   const [violations, setViolations] = useState<Violation[]>([]);
+  /** 本次构建的实际尺寸：章面足迹 / 总高 / 形状（被总高上限压过时和设定值不同） */
+  const [stats, setStats] = useState<BuildStats | null>(null);
   /** 每个文字图层的实际字号（自动适应章面后可能小于设定值） */
   const [fits, setFits] = useState<LayerFit[]>([]);
   /** 图像图层 id → 像素；不进 state，避免每次拖参数都深拷贝几 MB */
@@ -169,6 +172,7 @@ export default function App() {
         if (res.ok && res.mesh) {
           setMesh(res.mesh);
           setViolations(res.mesh.violations ?? []);
+          setStats(res.stats ?? null);
           setElapsed(performance.now() - t0);
           // 图像描摹结果只有 worker 有，盖印效果要在建模回来后补画一遍
           if (res.previewRings && res.previewRings.length > 0) {
@@ -412,6 +416,43 @@ export default function App() {
               style={{ width: '100%' }}
             />
           </Field>
+        )}
+
+        {(libStyle === 'cylinder' || libStyle === 'column') && (
+          <Field
+            label={`总高 ${
+              spec.body.maxHeightMm ??
+              Math.round(spec.body.sizeMm * (libStyleDef?.heightRatio ?? 1))
+            }mm`}
+          >
+            <input
+              type="range" min={20} max={120} step={1}
+              value={
+                spec.body.maxHeightMm ??
+                Math.round(spec.body.sizeMm * (libStyleDef?.heightRatio ?? 1))
+              }
+              onChange={(e) => patch((s) => { s.body.maxHeightMm = Number(e.target.value); })}
+              style={{ width: '100%' }}
+            />
+            <div style={{ fontSize: 10.5, color: '#a39c91', lineHeight: 1.4, marginTop: 2 }}>
+              调矮会连带把章面缩下来（章面尺寸变成上限）。想恢复原比例点右边。
+            </div>
+            <button
+              onClick={() => patch((s) => { delete s.body.maxHeightMm; })}
+              style={{ ...miniBtnStyle, marginTop: 4 }}
+            >
+              按原比例
+            </button>
+          </Field>
+        )}
+
+        {stats && (
+          <div style={{ fontSize: 11, color: '#7a746b', marginBottom: 10, lineHeight: 1.5 }}>
+            实际出模：章面 <strong>{stats.faceSizeMm.toFixed(1)}mm</strong> · 总高{' '}
+            <strong>{stats.heightMm.toFixed(1)}mm</strong>
+            {Math.abs(stats.faceSizeMm - spec.body.sizeMm) > 0.2 &&
+              `（设定 ${spec.body.sizeMm}mm，被总高上限压小了）`}
+          </div>
         )}
 
         <Field label={`章面尺寸 ${spec.body.sizeMm}mm`}>

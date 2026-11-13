@@ -70,6 +70,9 @@ const CASE_DEFS: CaseDef[] = [
   { id: 'four-20-engraved', text: TEXT, sizeMm: 20, mode: 'engraved', fontSizeMm: 4.5 },
   // 文字自动适应章面：7 个字 7mm 会被等比缩到 ~4mm
   { id: 'seven-30-autofit', text: '印章工坊印鉴藏', sizeMm: 30, mode: 'engraved', suffix: '（自动适应）' },
+  // 最小章面尺寸的实测依据：10mm 到底还能不能刻（minSizeMm 现在是 10）
+  { id: 'four-10-min', text: TEXT, sizeMm: 10, mode: 'engraved' },
+  { id: 'two-10-min', text: '印章', sizeMm: 10, mode: 'engraved' },
 ];
 
 const CASES: Case[] = CASE_DEFS.map((def) => {

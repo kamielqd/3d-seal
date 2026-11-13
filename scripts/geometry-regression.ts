@@ -5,7 +5,7 @@
  * 覆盖 crosssection.ts:69 的问题：
  *   20×20 方框挖 10×10 孔，保留环方向 + NonZero 后面积必须仍是 300（不是 400）。
  */
-import { createDefaultSpec } from '../src/core/spec.ts';
+import { createDefaultSpec, BODY_STYLES as SPEC_BODY_STYLES } from '../src/core/spec.ts';
 import { BODY_STYLES, loadBody, setBodyReader } from '../src/geometry/body-library.ts';
 import type { BodyStyleId } from '../src/geometry/body-library.ts';
 import { borderPolygons, borderSection, bodySection, buildSeal } from '../src/geometry/pipeline.ts';
@@ -23,6 +23,7 @@ import type { ManifoldKit } from '../src/geometry/crosssection.ts';
 import { measureMinStrokeRaster } from '../src/geometry/raster.ts';
 import { repairSelfIntersections } from '../src/geometry/polygon.ts';
 import { checkPrintability } from '../src/geometry/printability.ts';
+import { lastBuildStats } from '../src/geometry/pipeline.ts';
 import { SealGeometryError } from '../src/geometry/types.ts';
 import type { Contour, Polygon2D, SolidMesh, Vec2 } from '../src/geometry/types.ts';
 import { readFileSync } from 'node:fs';
@@ -35,6 +36,8 @@ function check(ok: boolean, label: string, detail = '') {
 
 const kit: ManifoldKit = await getManifold();
 const spec = createDefaultSpec();
+// 参数化测试片（plate）：这些基础用例测的是截面/布尔/校验，不该被内置模型影响
+(spec.body as { styleId?: string }).styleId = 'plate';
 
 function rect(x0: number, y0: number, x1: number, y1: number, ccw = true): Contour {
   const pts: Vec2[] = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
@@ -227,16 +230,19 @@ const merged = await unionContours([outer, hole]);
 check(merged.length === 2, 'unionContours 返回 外环+孔 两条环', `rings=${merged.length}`);
 
 
-/* ---------- 7. 打印取向：face-up 只允许无手柄 ---------- */
+/* ---------- 7. 打印取向：face-up 只对阳刻有意义 ---------- */
 const baseSpec = createDefaultSpec();
+(baseSpec.body as { styleId?: string }).styleId = 'plate';
+const plateThickness = (body: { thicknessMm?: number; baseThicknessMm: number }): number =>
+  body.thicknessMm ?? body.baseThicknessMm;
 const sealRect: Polygon2D = { outer: rect(-6, -2, 6, 2), holes: [] };
 
 const raisedSpec = { ...baseSpec, relief: { ...baseSpec.relief, mode: 'raised' as const, depthMm: 1.2 } };
 const faceDown = await buildSeal(raisedSpec, [sealRect]);
 const bridgeDown = (faceDown.violations ?? []).find((v) => v.rule === 'bridge.span');
-check(bridgeDown?.severity === 'error', '阳刻+FDM+有手柄：bridge.span 升为 error', `severity=${bridgeDown?.severity}`);
+check(bridgeDown?.severity === 'error', '阳刻+FDM：底板整片悬空 → bridge.span error', `severity=${bridgeDown?.severity}`);
 
-const faceUpSpec = { ...raisedSpec, body: { ...raisedSpec.body, handle: 'none' as const }, orientation: 'face-up' as const };
+const faceUpSpec = { ...raisedSpec, orientation: 'face-up' as const };
 const faceUp = await buildSeal(faceUpSpec, [sealRect]);
 const zs = () => {
   const p = faceUp.vertProperties;
@@ -252,9 +258,9 @@ const zs = () => {
 const range = zs();
 check(range.min === 0, 'face-up：z 最小值 = 0（贴床）', JSON.stringify(range));
 check(
-  Math.abs(range.max - (raisedSpec.relief.depthMm + raisedSpec.body.baseThicknessMm)) < 0.05,
-  'face-up：高度 = depth + 底板厚',
-  `${range.max} vs ${baseSpec.relief.depthMm + baseSpec.body.baseThicknessMm}`,
+  Math.abs(range.max - (raisedSpec.relief.depthMm + plateThickness(baseSpec.body))) < 0.05,
+  'face-up：高度 = depth + 测试片厚度',
+  `${range.max} vs ${raisedSpec.relief.depthMm + plateThickness(baseSpec.body)}`,
 );
 check(
   !(faceUp.violations ?? []).some((v) => v.rule === 'bridge.span'),
@@ -262,13 +268,18 @@ check(
   (faceUp.violations ?? []).map((v) => v.rule).join(',') || '无',
 );
 
+// 阴刻本来就是盖印面贴床，翻面只会把它倒过来 → 必须拒绝
 let threw = false;
+let threwStatus = '';
 try {
-  await buildSeal({ ...raisedSpec, orientation: 'face-up' }, [sealRect]);
-} catch {
+  await buildSeal({ ...baseSpec, relief: { ...baseSpec.relief, mode: 'engraved' as const }, orientation: 'face-up' }, [
+    sealRect,
+  ]);
+} catch (error) {
   threw = true;
+  threwStatus = error instanceof SealGeometryError ? error.status : String(error);
 }
-check(threw, 'face-up + 手柄：直接抛错（不允许导出）');
+check(threw && threwStatus === 'FaceUpRequiresRaised', 'face-up + 阴刻：抛 FaceUpRequiresRaised', threwStatus);
 
 
 /* ---------- 8. 阴刻 bridge.span 按「最宽单条槽」判，不按面积 ---------- */
@@ -554,6 +565,186 @@ for (const style of BODY_STYLES) {
     `${style.label}：没有阻断导出的 error`,
     (mesh.violations ?? []).map((v) => `${v.severity}:${v.rule}`).join(',') || '无',
   );
+
+  // 回传：章面形状 / 实际足迹 / 实际总高（UI 面板靠这三个）
+  const stats = lastBuildStats();
+  check(
+    stats?.faceShape === style.faceShape,
+    `${style.label}：回传 faceShape = ${style.faceShape}`,
+    `faceShape=${stats?.faceShape}`,
+  );
+  check(
+    Math.abs((stats?.faceSizeMm ?? 0) - SIZE_MM) < 0.2,
+    `${style.label}：回传 faceSizeMm ≈ ${SIZE_MM}mm`,
+    `faceSizeMm=${stats?.faceSizeMm?.toFixed(2)}`,
+  );
+  check(
+    Math.abs((stats?.heightMm ?? 0) - expectedHeight) < 0.5,
+    `${style.label}：回传 heightMm ≈ ${expectedHeight.toFixed(2)}mm`,
+    `heightMm=${stats?.heightMm?.toFixed(2)}`,
+  );
+}
+
+/* ---------- 12b. 圆章出界要报错，不能静默削掉 ---------- */
+{
+  const circleSpec = librarySpec('classic'); // classic 是圆章
+  // 30mm 圆章半径 15mm；这条矩形最远点 hypot(16,2)=16.1mm，已经出圆
+  const outOfCircle: Polygon2D[] = [{ outer: rect(12, -2, 16, 2), holes: [] }];
+  const mesh = await buildSeal(circleSpec, outOfCircle);
+  const bounds = (mesh.violations ?? []).find((v) => v.rule === 'pattern.bounds');
+  check(
+    bounds?.severity === 'error' && (bounds.measured ?? 0) > 15,
+    '圆章：图案超出圆形边界 → pattern.bounds error',
+    `severity=${bounds?.severity} measured=${bounds?.measured} limit=${bounds?.limit}`,
+  );
+
+  // 对照：同一图案放进方章（column）不该报
+  const squareSpec = librarySpec('column');
+  const squareMesh = await buildSeal(squareSpec, [{ outer: rect(-2, -2, 2, 2), holes: [] }]);
+  check(
+    !(squareMesh.violations ?? []).some((v) => v.rule === 'pattern.bounds'),
+    '方章：同样的图案不误报 pattern.bounds',
+    (squareMesh.violations ?? []).map((v) => v.rule).join(',') || '无',
+  );
+}
+
+/* ---------- 12c. 总高上限：取小 + 明确提示 ---------- */
+{
+  const tallSpec = {
+    ...librarySpec('cylinder'),
+    body: { ...baseSpec.body, sizeMm: 30, styleId: 'cylinder' as const, maxHeightMm: 30 },
+  };
+  const mesh = await buildSeal(tallSpec, textLikePolygons());
+  const stats = lastBuildStats();
+  check(mesh.status === 'NoError', '总高上限：仍然 NoError', mesh.status);
+  check(
+    Math.abs((stats?.heightMm ?? 0) - 30) < 0.5,
+    '总高上限：总高被压到 30mm',
+    `heightMm=${stats?.heightMm?.toFixed(2)}`,
+  );
+  check(
+    Math.abs((stats?.faceSizeMm ?? 0) - 13.9) < 0.5,
+    '总高上限：足迹随之缩到 ≈13.9mm（圆柱）',
+    `faceSizeMm=${stats?.faceSizeMm?.toFixed(2)}`,
+  );
+  const note = (mesh.violations ?? []).find((v) => v.rule === 'size.range' && v.message.includes('总高上限'));
+  check(
+    note !== undefined && note.severity === 'info',
+    '总高上限：给出提示（不默默缩小）',
+    note?.message.slice(0, 70) ?? '无提示',
+  );
+}
+
+/* ---------- 12d. 章面上限 100mm ---------- */
+{
+  const bigSpec = {
+    ...engravedSpecMini,
+    body: { ...baseSpec.body, sizeMm: 100, cornerRadiusMm: 2, border: { style: 'none' as const, widthMm: 1.2, insetMm: 1.2 } },
+  };
+  const big = await buildSeal(bigSpec, [{ outer: rect(-6, -2, 6, 2), holes: [] }]);
+  check(big.status === 'NoError', '100mm 章面：能出 NoError 实体', `${big.triangleCount} 面 ${big.status}`);
+  const thin = (big.violations ?? []).find((v) => v.rule === 'base.thickness');
+  check(
+    thin?.severity === 'warn' && (thin.measured ?? 0) > 25,
+    '100mm 章面 + 2.5mm 底板：有跨厚比提示',
+    `measured=${thin?.measured} ${thin?.message.slice(0, 50) ?? '无'}`,
+  );
+  // 加厚底板后不该再提示
+  const thick = await buildSeal(
+    { ...bigSpec, body: { ...bigSpec.body, baseThicknessMm: 4.5 } },
+    [{ outer: rect(-6, -2, 6, 2), holes: [] }],
+  );
+  check(
+    !(thick.violations ?? []).some((v) => v.rule === 'base.thickness'),
+    '100mm 章面 + 4.5mm 底板：跨厚比提示消失',
+    (thick.violations ?? []).map((v) => v.rule).join(',') || '无',
+  );
+}
+
+/* ---------- 12e. 测试片：方 / 圆 / 正六边形，厚 3.00 ---------- */
+for (const [label, shape, sides] of [
+  ['方形', 'square', 6],
+  ['圆形', 'circle', 6],
+  ['正六边形', 'polygon', 6],
+] as const) {
+  const plateBody = {
+    ...baseSpec.body,
+    styleId: 'plate' as const,
+    shape,
+    sides,
+    sizeMm: 30,
+    baseThicknessMm: 3,
+    border: { style: 'none' as const, widthMm: 1.2, insetMm: 1.2 },
+  };
+  const mesh = await buildSeal({ ...engravedSpecMini, body: plateBody }, textLikePolygons());
+  const stats = lastBuildStats();
+  const b = meshBounds(mesh);
+  check(mesh.status === 'NoError', `测试片${label}：status NoError`, `${mesh.triangleCount} 面 ${mesh.status}`);
+  check(
+    Math.abs((stats?.heightMm ?? 0) - 3) < 0.05,
+    `测试片${label}：厚度 3.00±0.05`,
+    `heightMm=${stats?.heightMm?.toFixed(3)}`,
+  );
+  check(Math.abs(b.min[2]!) < 0.05, `测试片${label}：底面贴 z=0`, `zMin=${b.min[2]!.toFixed(3)}`);
+  if (shape !== 'polygon') {
+    const footprint = Math.max(b.max[0]! - b.min[0]!, b.max[1]! - b.min[1]!);
+    check(
+      Math.abs(footprint - 30) < 0.05,
+      `测试片${label}：足迹 = 30mm`,
+      `${footprint.toFixed(2)}mm`,
+    );
+  }
+}
+
+// 阴阳刻在测试片上都成立：阳刻 zMax = depth + 厚度，阴刻 zMax = 厚度
+{
+  const plateBody = {
+    ...baseSpec.body,
+    styleId: 'plate' as const,
+    shape: 'square' as const,
+    sizeMm: 30,
+    baseThicknessMm: 3,
+    border: { style: 'none' as const, widthMm: 1.2, insetMm: 1.2 },
+  };
+  const raisedPlate = await buildSeal(
+    { ...baseSpec, body: plateBody, relief: { mode: 'raised' as const, depthMm: 1.2 } },
+    textLikePolygons(),
+  );
+  const rb = meshBounds(raisedPlate);
+  check(
+    Math.abs(rb.max[2]! - (1.2 + 3)) < 0.05,
+    '测试片阳刻：zMax = depth + 厚度',
+    `zMax=${rb.max[2]!.toFixed(2)} 期望 ${(1.2 + 3).toFixed(2)}`,
+  );
+  // 浮雕深超过板厚必须拒绝，不能默默穿底
+  let deepError: unknown = null;
+  try {
+    await buildSeal(
+      { ...baseSpec, body: plateBody, relief: { mode: 'raised' as const, depthMm: 3.2 } },
+      textLikePolygons(),
+    );
+  } catch (error) {
+    deepError = error;
+  }
+  check(
+    deepError instanceof SealGeometryError && deepError.status === 'ReliefDeeperThanPlate',
+    '测试片阳刻：浮雕深 > 板厚 → 抛 ReliefDeeperThanPlate',
+    deepError instanceof SealGeometryError ? deepError.status : String(deepError),
+  );
+}
+
+/* ---------- 12f. 注册表口径：spec 的 heightRatio 必须和 STL 实测一致 ---------- */
+{
+  for (const style of BODY_STYLES) {
+    const declared = SPEC_BODY_STYLES.find((entry) => entry.id === style.id);
+    if (declared === undefined) continue;
+    const measured = style.sourceBoxCm.z / Math.max(style.sourceBoxCm.x, style.sourceBoxCm.y);
+    check(
+      Math.abs(declared.heightRatio - measured) / Math.max(1e-6, measured) < 0.02,
+      `注册表口径：${style.label} 的 heightRatio 与 STL 实测一致`,
+      `spec=${declared.heightRatio} 实测=${measured.toFixed(4)}`,
+    );
+  }
 }
 
 // 负向：把 flipUpsideDown 打开（等于把圆角翻到下面），断言必须响——

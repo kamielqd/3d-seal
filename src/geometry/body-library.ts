@@ -18,6 +18,7 @@
 
 import { getManifold } from './crosssection.ts';
 import type { ManifoldKit } from './crosssection.ts';
+import type { BodyStyleId } from '../core/spec.ts';
 import { SealGeometryError } from './types.ts';
 
 type Solid = InstanceType<ManifoldKit['Manifold']>;
@@ -25,7 +26,10 @@ type Solid = InstanceType<ManifoldKit['Manifold']>;
 /** STL 里的长度单位是厘米，几何一律 mm。 */
 export const SOURCE_UNIT_MM = 10;
 
-export type BodyStyleId = 'classic' | 'cylinder' | 'column' | 'dome';
+export type { BodyStyleId };
+
+/** 章面形状：决定图案按方形还是圆形边界校验（`checkPatternBounds`）。 */
+export type FaceShape = 'square' | 'circle';
 
 export interface BodyStyle {
   id: BodyStyleId;
@@ -33,6 +37,11 @@ export interface BodyStyle {
   file: string;
   /** 中文名，UI 直接用。 */
   label: string;
+  /**
+   * 章面（贴床那一面）的顶视剪影形状。
+   * 圆章的可用区域是内切圆，按方形的边角留会高估 41%，文字会贴到圆的边上。
+   */
+  faceShape: FaceShape;
   /** 源文件实测包围盒，**厘米**（STL 原始单位），用于校验与文档。 */
   sourceBoxCm: { x: number; y: number; z: number };
   /**
@@ -43,11 +52,21 @@ export interface BodyStyle {
 }
 
 export const BODY_STYLES: readonly BodyStyle[] = [
-  { id: 'classic', file: 'classic.stl', label: '常见样式', sourceBoxCm: { x: 2.0, y: 2.0, z: 2.03 } },
-  { id: 'cylinder', file: 'cylinder.stl', label: '圆柱', sourceBoxCm: { x: 1.248, y: 1.248, z: 2.683 } },
-  { id: 'column', file: 'column.stl', label: '立方柱', sourceBoxCm: { x: 1.174, y: 1.174, z: 2.581 } },
-  { id: 'dome', file: 'dome.stl', label: '石墩', sourceBoxCm: { x: 2.0, y: 2.0, z: 1.93 } },
+  { id: 'classic', file: 'classic.stl', label: '常见样式', faceShape: 'circle', sourceBoxCm: { x: 2.0, y: 2.0, z: 2.03 } },
+  { id: 'cylinder', file: 'cylinder.stl', label: '圆柱', faceShape: 'circle', sourceBoxCm: { x: 1.248, y: 1.248, z: 2.683 } },
+  { id: 'column', file: 'column.stl', label: '立方柱', faceShape: 'square', sourceBoxCm: { x: 1.174, y: 1.174, z: 2.581 } },
+  { id: 'dome', file: 'dome.stl', label: '石墩', faceShape: 'circle', sourceBoxCm: { x: 2.0, y: 2.0, z: 1.93 } },
 ];
+
+/**
+ * 模型「原始尺寸下的章面足迹」mm（= 源包围盒长边 × cm→mm）。
+ *
+ * 注册表里不另存一份 `faceSizeMm`：它就是 `sourceBoxCm` 换算来的，
+ * 存两处迟早会不一致。实际缩放后的足迹由 `buildSeal` 回传到 BuildStats。
+ */
+export function naturalFaceSizeMm(style: BodyStyle): number {
+  return Math.max(style.sourceBoxCm.x, style.sourceBoxCm.y) * SOURCE_UNIT_MM;
+}
 
 const STYLE_BY_ID = new Map<string, BodyStyle>(BODY_STYLES.map((style) => [style.id, style]));
 

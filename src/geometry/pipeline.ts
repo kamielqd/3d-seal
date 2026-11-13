@@ -27,9 +27,9 @@
  * `orientation: 'face-up'` 分支（刚体旋转 180°，要求 handle === 'none'）。
  */
 
-import type { BodyConfig, PrintConfig, ReliefConfig } from '../core/spec.ts';
+import type { BodyConfig, BodyKind, PrintConfig, ReliefConfig } from '../core/spec.ts';
 import type { LayerFit } from '../core/layout-bridge.ts';
-import { isBodyStyleId, loadBody } from './body-library.ts';
+import { getBodyStyle, isBodyStyleId, loadBody } from './body-library.ts';
 import type { BodyStyleId } from './body-library.ts';
 import { fromCrossSection, getManifold, prepareSectionWithReport } from './crosssection.ts';
 import type { ManifoldKit, PrepareReport } from './crosssection.ts';
@@ -71,6 +71,14 @@ export interface BuildStats {
   orientation: SealOrientation;
   /** 图案来源多边形数量。 */
   polygonCount: number;
+  /** 章面形状：外部主体由模型决定，程序章体取 body.shape（polygon 按方形边界处理）。 */
+  faceShape: 'square' | 'circle' | 'polygon';
+  /** 实际章面足迹 mm（缩放之后；外部主体可能被总高上限压小）。 */
+  faceSizeMm: number;
+  /** 实际总高 mm（含手柄/柱身）。 */
+  heightMm: number;
+  /** 总高上限生效时，按足迹本可以做到多大（mm）；没被限制就是 null。 */
+  faceSizeWithoutHeightLimitMm: number | null;
 }
 
 let lastStats: BuildStats | null = null;
@@ -249,53 +257,101 @@ export function handleSolid(kit: ManifoldKit, body: BodyConfig, bottomZ: number)
 /**
  * 造一枚完整印章。
  *
+ * 按 `body.styleId` 分派：
+ *   - 4 个内置模型（classic / cylinder / column / dome）→ 模型库路径
+ *   - `plate`（测试片）→ 参数化平板：方形 / 圆形 / 正多边形，厚度默认 3mm
+ *   - **没有 styleId**：旧 spec 兼容，按测试片处理。新建 spec 一定带 styleId
+ *     （默认 classic），所以这条分支只在旧数据和测试里出现。
+ *
  * @param spec body / relief / print
  * @param polygons 二维图案（文字与图像已合并），外环 CCW、内孔 CW、单位 mm
  */
 export async function buildSeal(spec: SealBuildSpec, polygons: readonly Polygon2D[]): Promise<SolidMesh> {
   const kit = await getManifold();
+  const styleId = readAnyBodyStyle(spec.body);
+  if (styleId !== null && styleId !== 'plate') {
+    return buildSealWithLibraryBody(kit, spec, polygons, styleId);
+  }
+  return buildSealWithPlate(kit, spec, polygons);
+}
+
+/** `plate`（参数化测试片）+ 4 个内置模型，统称主体样式。 */
+function readAnyBodyStyle(body: BodyConfig): BodyKind | null {
+  // 直接按结构化类型读，避免和 spec.ts 里将来收窄的 styleId 类型打架
+  const raw = (body as { readonly styleId?: unknown }).styleId;
+  if (raw === 'plate') return 'plate';
+  return isBodyStyleId(raw) ? raw : null;
+}
+
+/** 测试片参数：形状 / 边数 / 厚度。字段还没进 spec 时按结构化类型读并给默认值。 */
+export interface PlateParams {
+  shape: 'square' | 'circle' | 'polygon';
+  sides: number;
+  thicknessMm: number;
+  cornerRadiusMm: number;
+}
+
+function readPlateParams(body: BodyConfig): PlateParams {
+  const raw = body as BodyConfig & { readonly thicknessMm?: unknown };
+  const shape = body.shape === 'circle' ? 'circle' : body.shape === 'polygon' ? 'polygon' : 'square';
+  const thickness =
+    typeof raw.thicknessMm === 'number' && Number.isFinite(raw.thicknessMm) && raw.thicknessMm > 0
+      ? raw.thicknessMm
+      : Math.max(0.8, body.baseThicknessMm);
+  return {
+    shape,
+    sides: Math.max(3, Math.min(12, Math.round(body.sides))),
+    thicknessMm: Math.max(0.8, thickness),
+    cornerRadiusMm: shape === 'square' ? Math.max(0, body.cornerRadiusMm) : 0,
+  };
+}
+
+/**
+ * 测试片：一块厚 `thicknessMm` 的平板（方/圆/正多边形），没有手柄、没有边框。
+ *
+ * z 约定与整枚印章一致（盖印面贴床，z=0）：
+ *   阳刻：图案 z∈[0, depth]，平板 z∈[depth, depth+T]
+ *   阴刻：平板 z∈[0, T]，槽从 z=0 往上挖 depth
+ * 最后镜像 X。
+ */
+async function buildSealWithPlate(
+  kit: ManifoldKit,
+  spec: SealBuildSpec,
+  polygons: readonly Polygon2D[],
+): Promise<SolidMesh> {
   const body = spec.body;
   const relief = spec.relief;
   const print = spec.print;
+  const params = readPlateParams(body);
 
-  // 外部主体：spec.body.styleId 有值就忽略 shape/border/handle，走模型库那条路。
-  // 两条路最后都收进 finishSeal()，保证校验口径只有一份。
-  const styleId = readBodyStyleId(body);
-  if (styleId !== null) return buildSealWithLibraryBody(kit, spec, polygons, styleId);
-
-  const thickness = Math.max(0.8, body.baseThicknessMm);
+  const thickness = params.thicknessMm;
   const depth = Math.max(0.2, relief.depthMm);
   const raised = relief.mode !== 'engraved';
 
-  // z 轴约定：z=0 = 盖印面（贴打印床的那一面，盖出来接触纸）
-  //   阳刻：字母 z∈[0, depth]，底板 z∈[depth, depth+T]，手柄在底板背面
-  //   阴刻：底板 z∈[0, T]，槽从 z=0 往上挖 depth，手柄在 z=T 背面
-  // 这样阳刻的字母柱立在床上、底板横跨在上面（桥接跨度=字缝），无需支撑；
-  // 整体 Z 翻转会把旋钮手柄翻到下面，不能用。
+  if (raised && depth > thickness - 0.2) {
+    throw new SealGeometryError(
+      '测试片',
+      'ReliefDeeperThanPlate',
+      `浮雕深 ${depth}mm 接近/超过测试片厚度 ${thickness}mm：阳刻会直接穿底。把深度降到 ${Math.max(0.2, thickness - 0.4).toFixed(1)}mm 以下，或加厚测试片。`,
+    );
+  }
+
   const plateBottom = raised ? depth : 0;
   const plateTop = plateBottom + thickness;
 
-  // 1) 底板
+  // 1) 平板：复用 bodySection（它已经处理方/圆/正多边形 + 圆角）
   const faceSection = bodySection(kit, body);
+  // 边框：形制件，和图案同深度但**不参与** prepareSection 的闭运算（否则细边框会被加粗、
+  // 或和文字焊成一片）。先在平板上取出边框截面，等图案处理完再合并。
   let border: CS | null = borderSection(faceSection, body.border);
   const plateExtruded = faceSection.extrude(thickness);
   faceSection.delete();
   const plate = plateExtruded.translate([0, 0, plateBottom]);
   plateExtruded.delete();
-  ensureStatus(plate, '底板挤出');
-
-  // 2) 手柄：坐在背面（plateTop）上，向下嵌入 base 与底板搭接
-  const handle = handleSolid(kit, body, plateTop);
+  ensureStatus(plate, '测试片挤出');
   let solid: Solid = plate;
-  if (handle !== null) {
-    const next = plate.add(handle);
-    plate.delete();
-    handle.delete();
-    solid = next;
-    ensureStatus(solid, '底板与手柄合并');
-  }
 
-  // 3) 图案：二维阶段先闭运算（保间隙）+ 测量外扩（保笔画），再一次性挤出
+  // 2) 图案：二维阶段先闭运算（保间隙）+ 测量外扩（保笔画），再一次性挤出
   let prepared: CS | null = null;
   let prepareReport: PrepareReport | null = null;
   if (polygons.length > 0) {
@@ -308,9 +364,7 @@ export async function buildSeal(spec: SealBuildSpec, polygons: readonly Polygon2
     prepareReport = prep.report;
   }
 
-  // 3b) 边框：和图案同深度，但在 prepareSection 之后才合并。
-  //     原因：闭运算会按「最小间隙」焊缝，若边框一开始就在图案里，细边框会被加粗、
-  //     或与文字焊成一片；边框是形制件，不应被可打印性修正改形。
+  // 2b) 合并边框（在 prepareSection 之后，理由见上面 border 的注释）
   if (border !== null && !border.isEmpty()) {
     if (prepared === null || prepared.isEmpty()) {
       prepared?.delete();
@@ -355,21 +409,29 @@ export async function buildSeal(spec: SealBuildSpec, polygons: readonly Polygon2
   solid.delete();
   solid = mirrored;
 
-  // 4.5) 打印取向：face-up = 整体绕 X 轴翻转 180° 后重新落回 z=0（刚体旋转，不改环方向）。
-  //      阳刻贴床时底板整片悬空，无手柄时可翻面：背面贴床、字母朝上，悬空面为 0。
+  // 4.5) 打印取向。
+  //
+  // ⚠️ 产品决策：打印方向固定「刻印面贴床」（face-down），UI 的选择器要删。
+  //    这里的 face-up 分支现在**只为「平装阳刻」预设保留**（阳刻贴床时底板整片
+  //    悬空、拆不掉支撑，必须翻面打）。等用户答复「阳刻要不要保留」后：
+  //      - 保留阳刻 → 这个分支由该预设内部自动选择，不再暴露成用户选项；
+  //      - 删掉阳刻 → 连同这个分支一起删。
+  //    在那之前不要重构它，也不要让别的入口传 face-up。
   const orientation: SealOrientation = spec.orientation ?? 'face-down';
   if (orientation === 'face-up') {
-    if (body.handle !== 'none') {
+    if (raised) {
+      const flipped = solid.rotate([180, 0, 0]).translate([0, 0, plateTop]);
+      solid.delete();
+      solid = flipped;
+      ensureStatus(solid, '面朝上翻转');
+    } else {
+      // 阴刻本来就是盖印面贴床，翻面只会把它倒过来
       throw new SealGeometryError(
         '打印取向',
-        'FaceUpRequiresNoHandle',
-        '面朝上打印必须去掉手柄：请把手柄设为「无」，或切回「盖印面贴床」并改用阴刻。',
+        'FaceUpRequiresRaised',
+        '面朝上打印只对阳刻有意义（阳刻贴床会把底板整片悬空）。阴刻请用「刻印面贴床」。',
       );
     }
-    const flipped = solid.rotate([180, 0, 0]).translate([0, 0, plateTop]);
-    solid.delete();
-    solid = flipped;
-    ensureStatus(solid, '面朝上翻转');
   }
 
   return finishSeal({
@@ -379,8 +441,9 @@ export async function buildSeal(spec: SealBuildSpec, polygons: readonly Polygon2
     polygons,
     prepared,
     prepareReport,
-    bodyShape: body.shape,
+    bodyShape: `plate:${params.shape}`,
     orientation,
+    printBody: { ...body, shape: params.shape, sizeMm: body.sizeMm },
   });
 }
 
@@ -399,14 +462,31 @@ async function finishSeal(args: {
   prepareReport: PrepareReport | null;
   bodyShape: string;
   orientation: SealOrientation;
+  /**
+   * 传给可打印性校验的「有效章体」：章面形状与实际尺寸。
+   * 外部主体要用模型自己的形状（圆/方）和缩放后的真实足迹，
+   * 否则 `checkPatternBounds` / `checkSize` 会按方形和用户设的名义尺寸判。
+   */
+  printBody: BodyConfig;
+  /** 总高上限压过足迹时，记录「不限高能到多大」；未受限为 null。 */
+  faceSizeWithoutHeightLimitMm?: number | null;
 }): Promise<SolidMesh> {
   const { kit, spec, polygons, solid } = args;
-  const body = spec.body;
   const relief = spec.relief;
   let prepared = args.prepared;
 
   const mesh = toSolidMesh(kit, solid, '最终实体');
   const status = mesh.status;
+
+  // 实际总高：直接从网格量，两条路径都准（含手柄/柱身）
+  let heightMin = Infinity;
+  let heightMax = -Infinity;
+  for (let i = 0; i < mesh.vertProperties.length; i += mesh.numProp) {
+    const z = mesh.vertProperties[i + 2]!;
+    if (z < heightMin) heightMin = z;
+    if (z > heightMax) heightMax = z;
+  }
+
   lastStats = {
     triangles: mesh.triangleCount,
     status,
@@ -414,15 +494,20 @@ async function finishSeal(args: {
     relief: relief.mode,
     orientation: args.orientation,
     polygonCount: polygons.length,
+    faceShape: args.printBody.shape,
+    faceSizeMm: args.printBody.sizeMm,
+    heightMm: Number.isFinite(heightMax) ? Math.round((heightMax - heightMin) * 100) / 100 : 0,
+    faceSizeWithoutHeightLimitMm: args.faceSizeWithoutHeightLimitMm ?? null,
   };
 
   // 5) 可打印性校验：2D 看笔画/间隙/孤岛/深宽比，3D 看悬空/底面/尺寸。
   //    不阻断导出，只把结果挂在 mesh 上让 UI 高亮。
+  //    注意用 printBody（有效章体）：外部主体的形状/实际足迹与 body 不同。
   try {
     mesh.violations = checkPrintability({
       section: prepared,
       solid: mesh,
-      body,
+      body: args.printBody,
       relief,
       print: spec.print ?? { process: 'fdm', minStrokeMm: 0.4, minGapMm: 0.4 },
       prepare: args.prepareReport,
@@ -468,14 +553,6 @@ async function finishSeal(args: {
 /* 外部主体                                                            */
 /* ------------------------------------------------------------------ */
 
-/** body 上可能带的 styleId（spec 由协调层维护，这里按结构化类型读，不硬依赖）。 */
-type BodyWithStyle = BodyConfig & { readonly styleId?: unknown };
-
-function readBodyStyleId(body: BodyConfig): BodyStyleId | null {
-  const raw = (body as BodyWithStyle).styleId;
-  return isBodyStyleId(raw) ? raw : null;
-}
-
 /**
  * 外部主体路径：模型库里的章体 + 阴刻图案。
  *
@@ -506,14 +583,27 @@ async function buildSealWithLibraryBody(
 
   // 共享缓存实例，不能 delete；下面只用它派生新实体
   const source = await loadBody(styleId);
+  const style = getBodyStyle(styleId);
   const sourceBox = source.boundingBox();
   const footprintCm = Math.max(sourceBox.max[0] - sourceBox.min[0], sourceBox.max[1] - sourceBox.min[1]);
+  const sourceHeightCm = Math.max(1e-6, sourceBox.max[2] - sourceBox.min[2]);
   if (!(footprintCm > 0)) {
     throw new SealGeometryError('外部主体', 'EmptyBody', `${styleId} 的底面足迹为 0，无法缩放。`);
   }
-  // 源坐标单位是 cm：footprintCm 是「以源单位计的足迹」，乘 k 之后坐标直接变成 mm
-  // （2.00cm 的底座 × k=15 = 30mm）
-  const scale = body.sizeMm / footprintCm;
+
+  // 缩放取小：足迹 ≤ sizeMm，且总高 ≤ maxHeightMm（都按 mm 算）
+  // 源坐标单位是 cm，乘 k 之后坐标直接变成 mm（2.00cm 的底座 × 15 = 30mm）
+  const scaleByFootprint = body.sizeMm / footprintCm;
+  const maxHeightMm = readMaxHeightMm(body);
+  const scaleByHeight =
+    maxHeightMm !== null && maxHeightMm > 0 ? maxHeightMm / sourceHeightCm : Number.POSITIVE_INFINITY;
+  const scale = Math.min(scaleByFootprint, scaleByHeight);
+
+  const actualFaceMm = footprintCm * scale;
+  const heightLimited = scaleByHeight < scaleByFootprint - 1e-9;
+  // 按足迹缩会得到多高（只在被限高时用来解释原因）
+  const heightIfFootprintScaled = sourceHeightCm * scaleByFootprint;
+
   const scaled = source.scale([scale, scale, scale]);
   const scaledBox = scaled.boundingBox();
   const placed = scaled.translate([
@@ -553,7 +643,16 @@ async function buildSealWithLibraryBody(
   solid.delete();
   solid = mirrored;
 
-  return finishSeal({
+  // 有效章体：形状来自模型（圆/方），尺寸是缩放后的**实际**足迹。
+  // 不这么做的话 checkPatternBounds 会按方形判圆章（高估 41%），
+  // checkSize 会按用户设的名义尺寸判（把被限高的章体当超限/合规判错）。
+  const printBody: BodyConfig = {
+    ...body,
+    shape: style.faceShape,
+    sizeMm: actualFaceMm,
+  };
+
+  const mesh = await finishSeal({
     kit,
     spec,
     solid,
@@ -563,7 +662,34 @@ async function buildSealWithLibraryBody(
     bodyShape: `library:${styleId}`,
     // 外部主体是实心模型，face-up 翻面只会把它倒过来，所以固定贴床
     orientation: 'face-down',
+    printBody,
+    faceSizeWithoutHeightLimitMm: heightLimited ? body.sizeMm : null,
   });
+
+  // 总高上限生效时必须明说，不能默默把章面缩小
+  if (heightLimited) {
+    mesh.violations = [
+      ...(mesh.violations ?? []),
+      {
+        rule: 'size.range',
+        severity: 'info',
+        measured: Math.round(actualFaceMm * 100) / 100,
+        limit: body.sizeMm,
+        message:
+          `章面被总高上限压到 ${actualFaceMm.toFixed(1)}mm（你要 ${body.sizeMm}mm，总高上限 ${maxHeightMm}mm）：` +
+          `${style.label} 源模型偏高瘦，按足迹缩会到 ${heightIfFootprintScaled.toFixed(1)}mm 高。` +
+          `想要更大的章面就调高总高上限，或换更扁的模型。`,
+        fix: 'fix:fitPattern',
+      },
+    ];
+  }
+  return mesh;
+}
+
+/** body 上可能带的 maxHeightMm（spec 由协调层维护，这里按结构化类型读）。 */
+function readMaxHeightMm(body: BodyConfig): number | null {
+  const raw = (body as BodyConfig & { readonly maxHeightMm?: unknown }).maxHeightMm;
+  return typeof raw === 'number' && Number.isFinite(raw) && raw > 0 ? raw : null;
 }
 
 /** 把 manifold 实体转成 SolidMesh，并做封闭性检查。 */

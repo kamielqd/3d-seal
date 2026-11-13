@@ -5,7 +5,7 @@
  * 放在 Worker 里的原因：布尔、描摹、网格化动辄几百毫秒，主线程会被拖成幻灯片。
  * 文字排版仍在主线程（纯数学 <1ms，要跟手）；这里只吃排好的轮廓。
  */
-import { buildSeal, borderPolygons } from '../geometry/pipeline.ts';
+import { buildSeal, borderPolygons, lastBuildStats, type BuildStats } from '../geometry/pipeline.ts';
 import { getManifold } from '../geometry/crosssection.ts';
 import { combinePolygons, traceLayer } from '../geometry/trace.ts';
 import type { Polygon2D } from '../geometry/types.ts';
@@ -45,6 +45,8 @@ export interface BuildResponse {
   /** 结构化错误码（TRACE_EMPTY / GEOM_DEGENERATE / NON_MANIFOLD …） */
   code?: string;
   stage?: string;
+  /** 本次构建的实际尺寸（章面足迹/总高/形状），UI 用来显示「设 30 得 20」 */
+  stats?: BuildStats | null;
   mesh?: {
     vertProperties: Float32Array;
     triVerts: Uint32Array;
@@ -112,6 +114,7 @@ ctx.onmessage = async (ev: MessageEvent<BuildRequest>) => {
     const payload: BuildResponse = {
       id,
       ok: true,
+      stats: lastBuildStats(),
       mesh: {
         vertProperties: mesh.vertProperties,
         triVerts: mesh.triVerts,
