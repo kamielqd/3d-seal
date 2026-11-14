@@ -149,7 +149,7 @@ export default function App() {
                 paddingMm: 1.5,
                 // 画布要看得清字形与凹槽，所以不要纸纹和飞白：那些只在「盖印效果」展示时好看
                 paper: { enabled: false },
-                ink: { flyWhite: 0, mottle: 0.15, edgeIrregularity: 0.2 },
+                ink: { flyWhite: 0, mottle: 0.06, edgeIrregularity: 0 },
                 // 阴刻是「图案留白、其余上墨」，不传 faceRing 会把盖印效果整个画反
                 engraved: spec.relief.mode === 'engraved',
                 faceRing: faceRingOf(spec),
@@ -185,7 +185,7 @@ export default function App() {
         }
         if (polygons.length === 0 && Object.keys(images).length === 0) {
           setMesh(null);
-          setError('没有可生成的内容：先输入文字或导入图像');
+          setError('还没有任何元素：用左边的「＋ 文字 / 环绕文字 / 边框 / 图片」加一个');
           setBuilding(false);
           return;
         }
