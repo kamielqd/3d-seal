@@ -39,6 +39,36 @@ async function fontFor(el: { fontId: string; text: string }): Promise<GlyphFont>
 
 const GAP_MM = 0.6;
 
+/**
+ * 把一组多边形整体**平移**到大圆内（只平移、绝不缩放）：
+ * 「文字必须在大圆内」是硬约束，但用户的字号不能替他改，所以只能把位置推回来。
+ * 迭代几次是因为平移后新的最远点可能换了一侧。
+ */
+function pushInsideCircle(polys: LayoutPolygon[], radiusMm: number): LayoutPolygon[] {
+  if (polys.length === 0) return polys;
+  let dx = 0;
+  let dy = 0;
+  for (let iter = 0; iter < 24; iter++) {
+    let far = 0;
+    let fx = 0;
+    let fy = 0;
+    for (const p of polys) {
+      for (const q of p.points) {
+        const x = q.x + dx;
+        const y = q.y + dy;
+        const d = Math.hypot(x, y);
+        if (d > far) { far = d; fx = x; fy = y; }
+      }
+    }
+    if (far <= radiusMm || far < 1e-6) break;
+    const over = far - radiusMm;
+    dx -= (fx / far) * over;
+    dy -= (fy / far) * over;
+  }
+  if (dx === 0 && dy === 0) return polys;
+  return polys.map((p) => ({ ...p, points: p.points.map((q) => ({ x: q.x + dx, y: q.y + dy })) }));
+}
+
 /** 普通文字：按百分比定位 + 绕自身中心旋转；行宽用圆的可用宽度折行 */
 async function layoutPlainText(el: PlainTextElement, spec: SealSpec): Promise<LayoutPolygon[]> {
   const D = spec.body.sizeMm;
@@ -57,7 +87,8 @@ async function layoutPlainText(el: PlainTextElement, spec: SealSpec): Promise<La
     maxWidthMm,
     lineHeight: 1.15,
   }) as unknown as LayoutPolygon[];
-  return polys;
+  // 文字必须留在大圆内：位置越界就整体推回来（字号不动）
+  return pushInsideCircle(polys, D / 2);
 }
 
 /**
