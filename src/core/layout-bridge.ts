@@ -32,21 +32,6 @@ async function fontFor(layer: TextLayer): Promise<GlyphFont> {
   return set as unknown as GlyphFont;
 }
 
-/** 文字实测包围盒（mm，章面坐标系）。 */
-function measure(polys: LayoutPolygon[]): { w: number; h: number } {
-  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-  for (const p of polys) {
-    for (const { x, y } of p.points) {
-      if (x < minX) minX = x;
-      if (x > maxX) maxX = x;
-      if (y < minY) minY = y;
-      if (y > maxY) maxY = y;
-    }
-  }
-  if (!Number.isFinite(minX)) return { w: 0, h: 0 };
-  return { w: maxX - minX, h: maxY - minY };
-}
-
 /** 章面形状：内置主体里 column 是方章，其余三个（常见样式/圆柱/石墩）都是圆章。 */
 function faceShapeOf(spec: SealSpec): { shape: 'square' | 'circle' | 'polygon'; sides: number } {
   const id = spec.body.styleId;
@@ -219,18 +204,10 @@ async function layoutTextWithFit(
     return { polygons: first, fit: makeFit(false, requested) };
   }
 
-  const m = measure(first);
-  // 圆章可用宽度取决于文字横带的高度，所以拿实测高度算弦长，再乘比例
-  const box = fitBoxMm(spec, m.h);
-  const k = Math.min(1, box.w > 0 && m.w > 0 ? box.w / m.w : 1, box.h > 0 && m.h > 0 ? box.h / m.h : 1);
-  if (k >= 0.995) return { polygons: first, fit: makeFit(false, requested) };
-
-  // 等比缩字号与字距：两者同时乘 k，包围盒也正好缩到 k 倍
-  const effective = Math.round(requested * k * 100) / 100;
-  return {
-    polygons: shear(build(effective, layer.letterSpacingMm * k)),
-    fit: makeFit(true, effective),
-  };
+  // 「自动适应章面」已停用：字号永远按用户设的值排，塞不下就让它超框并报出来，
+  // 不再由系统偷偷缩字号。环形版式那条按弧长缩的规则保留（那是防叠字的排版约束，
+  // 不是章面自适应）。
+  return { polygons: first, fit: makeFit(false, requested) };
 }
 
 

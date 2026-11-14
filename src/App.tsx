@@ -15,7 +15,7 @@ import {
   type Layer,
   type SealSpec,
 } from './core/spec.ts';
-import { layoutFlatWithFit, type LayerFit } from './core/layout-bridge.ts';
+import { layoutFlatWithFit } from './core/layout-bridge.ts';
 import { fromLayoutPolygons } from './core/polygon-bridge.ts';
 import { toStlBlob } from './export/stl.ts';
 import { to3mfBlob } from './export/threemf.ts';
@@ -55,7 +55,6 @@ export default function App() {
   /** 本次构建的实际尺寸：章面足迹 / 总高 / 形状（被总高上限压过时和设定值不同） */
   const [stats, setStats] = useState<BuildStats | null>(null);
   /** 每个文字图层的实际字号（自动适应章面后可能小于设定值） */
-  const [fits, setFits] = useState<LayerFit[]>([]);
   /** 右栏：元素属性 / 章体设置 */
   const [inspectorTab, setInspectorTab] = useState<'element' | 'body'>('element');
   /** 底部状态栏：展开打印校验明细 */
@@ -135,9 +134,8 @@ export default function App() {
       setError('');
       const t0 = performance.now();
       try {
-        const { polygons: flat, fits: layerFits } = await layoutFlatWithFit(spec);
+        const { polygons: flat } = await layoutFlatWithFit(spec);
         if (cancelled) return;
-        setFits(layerFits);
         // 盖印效果：版式输出的是**可读**轮廓，所以 mirror=false（翻一次就印反了）
         const paintInk = (rings: typeof flat) => {
           try {
@@ -198,9 +196,8 @@ export default function App() {
             polygons,
             polygonsByLayer,
             images,
-            // 自动适应章面的结果（整组）：几何侧据此把文案从「建议放大字号」换成
-            // 「系统替你缩过」，多层时还会点名是「文字 2」被缩
-            autoFit: layerFits,
+            // 自动适应章面已停用：字号永远是用户设的值，没有「系统替你缩过」这回事
+            autoFit: null,
           });
           // 兜底：几何引擎初始化失败时不会回消息，不能一直转圈
           setTimeout(() => {
@@ -253,8 +250,6 @@ export default function App() {
     selectedLayer && selectedLayer.kind === 'image' ? selectedLayer : undefined;
   /** 属性面板里所有「改当前这个文字层」的操作都按 id 定位，不再靠「第一个文字层」 */
   const editedId = textLayer?.id ?? null;
-  /** 当前选中文字层的自动适应结果（多层时只显示这一层，不混在一起） */
-  const currentFit = textLayer ? fits.find((f) => f.layerId === textLayer.id) : undefined;
   const fontId = textLayer ? textLayer.fontId : DEFAULT_FONT_ID;
   const fontText = textLayer ? textLayer.text : '';
   const missing = useMemo(() => checkMissing(fontText, fontId), [fontText, fontId]);
@@ -815,27 +810,6 @@ export default function App() {
             字号单位 mm；加粗/斜体是伪粗体与 12° 斜切，不依赖字体文件
           </div>
         </Field>
-
-        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, marginBottom: 10, cursor: 'pointer' }}>
-          <input
-            type="checkbox"
-            checked={!(textLayer && textLayer.kind === 'text' && textLayer.autoFit === false)}
-            onChange={(e) =>
-              patch((s) => {
-                const l = s.layers.find((x) => x.id === editedId);
-                if (l && l.kind === 'text') l.autoFit = e.target.checked;
-              })
-            }
-          />
-          自动适应章面（字多时等比缩小，塞不下的字不会探出章面）
-        </label>
-
-        {currentFit?.fitted && (
-          <div style={{ ...warnStyle, borderColor: '#e6ded0', background: '#faf7f1' }}>
-            这一层字号 {currentFit.requestedFontMm}mm 排不下，已按章面缩到{' '}
-            <strong>{currentFit.effectiveFontMm}mm</strong>。想要更大就减少字数、放大章面，或关掉自动适应自己调。
-          </div>
-        )}
 
           </>
         )}
