@@ -9,9 +9,23 @@
 import { useRef, useState } from 'react';
 import type { Layer } from '../core/spec.ts';
 
+export interface ElementExtra {
+  id: string;
+  /** 图标字：圈 / ✦ 这类单字 */
+  icon: string;
+  label: string;
+  active: boolean;
+  onSelect: () => void;
+  /** 不可删除的固定元素（外圈就是这样，删到无边框等价于「无」） */
+  onDelete?: () => void;
+  onDuplicate?: () => void;
+}
+
 export interface ElementListProps {
   layers: readonly Layer[];
   selectedId: string | null;
+  /** 非图层类元素：外圈、中心图案 */
+  extras?: readonly ElementExtra[];
   onSelect: (id: string) => void;
   onAddText: () => void;
   onAddImage: (file: File) => void;
@@ -65,7 +79,7 @@ const opBtnStyle: React.CSSProperties = {
 };
 
 export default function ElementList(props: ElementListProps) {
-  const { layers, selectedId } = props;
+  const { layers, selectedId, extras = [] } = props;
   const textCount = layers.filter((l) => l.kind === 'text').length;
   const [dragId, setDragId] = useState<string | null>(null);
   const [overIndex, setOverIndex] = useState<number | null>(null);
@@ -75,7 +89,7 @@ export default function ElementList(props: ElementListProps) {
   return (
     <div style={{ marginBottom: 12 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 6 }}>
-        <span style={{ fontSize: 12, fontWeight: 600 }}>元素（{layers.length}）</span>
+        <span style={{ fontSize: 12, fontWeight: 600 }}>元素（{layers.length + extras.length}）</span>
         <span style={{ display: 'flex', gap: 4 }}>
           <button
             onClick={props.onAddText}
@@ -194,6 +208,41 @@ export default function ElementList(props: ElementListProps) {
           </div>
         );
       })}
+
+      {extras.map((ex) => (
+        <div
+          key={ex.id}
+          onClick={ex.onSelect}
+          style={{
+            ...rowStyle,
+            borderColor: ex.active ? '#b3261e' : '#eee7dc',
+            background: ex.active ? '#fdf6f5' : '#fff',
+            cursor: 'pointer',
+          }}
+        >
+          <span style={{ ...iconStyle, color: ex.active ? '#b3261e' : '#7a746b', cursor: 'pointer' }}>{ex.icon}</span>
+          <span
+            style={{
+              flex: 1,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+              color: ex.active ? '#b3261e' : '#3d3a34',
+            }}
+          >
+            {ex.label}
+          </span>
+          {ex.onDelete && (
+            <button
+              onClick={(e) => { e.stopPropagation(); ex.onDelete?.(); }}
+              style={opBtnStyle}
+              title="关掉这个元素"
+            >
+              ✕
+            </button>
+          )}
+        </div>
+      ))}
     </div>
   );
 }

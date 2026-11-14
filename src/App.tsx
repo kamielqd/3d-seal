@@ -237,9 +237,16 @@ export default function App() {
     };
   }, [spec, imageVersion]);
 
+  /** 非图层元素（外圈 / 中心图案）在清单里的固定 id */
+  const BORDER_ID = '__border__';
+  const ORNAMENT_ID = '__ornament__';
+  const isBorderSelected = selectedId === BORDER_ID;
+  const isOrnamentSelected = selectedId === ORNAMENT_ID;
   /** 选中的层；选中的层被删掉时退回第一层，面板不会空窗 */
   const selectedLayer: Layer | undefined =
-    spec.layers.find((l) => l.id === selectedId) ?? spec.layers[0];
+    isBorderSelected || isOrnamentSelected
+      ? undefined
+      : spec.layers.find((l) => l.id === selectedId) ?? spec.layers[0];
   /** 只有选中文字层时才出文字属性；选中图像时文字面板整体收起 */
   const textLayer = selectedLayer && selectedLayer.kind === 'text' ? selectedLayer : undefined;
   const selectedImage =
@@ -263,6 +270,48 @@ export default function App() {
     return raw && raw !== 'plate' ? raw : 'none';
   })();
   const handleDef = handleId === 'none' ? undefined : BODY_STYLES.find((s) => s.id === handleId);
+
+  /** 环形层的中心图案：现在作为独立元素出现在清单里 */
+  const ringLayer = spec.layers.find(
+    (l): l is Extract<Layer, { kind: 'text' }> => l.kind === 'text' && l.layout === 'ring',
+  );
+  const elementExtras = [
+    {
+      id: BORDER_ID,
+      icon: '圈',
+      label:
+        spec.body.border.style === 'none'
+          ? '外圈（无）'
+          : `外圈 ${spec.body.border.widthMm}mm`,
+      active: isBorderSelected,
+      onSelect: () => {
+        setSelectedId(BORDER_ID);
+        setInspectorTab('element');
+      },
+      onDelete: () => patch((s) => { s.body.border.style = 'none'; }),
+    },
+    ...(ringLayer
+      ? [
+          {
+            id: ORNAMENT_ID,
+            icon: '✦',
+            label:
+              ringLayer.ringOrnament && ringLayer.ringOrnament !== 'none'
+                ? `中心图案 · ${ringLayer.ringOrnament === 'star' ? '五角星' : '六芒星'}`
+                : '中心图案（无）',
+            active: isOrnamentSelected,
+            onSelect: () => {
+              setSelectedId(ORNAMENT_ID);
+              setInspectorTab('element');
+            },
+            onDelete: () =>
+              updateLayer(ringLayer.id, (l) => {
+                if (l.kind === 'text') l.ringOrnament = 'none';
+              }),
+          },
+        ]
+      : []),
+  ];
 
   /** 画布线框用的每层轮廓；没有轮廓的层（如图像）仍然占位，只是不画框 */
   const canvasLayers = spec.layers.map((l) => ({
@@ -491,7 +540,7 @@ export default function App() {
         }}
       >
         <div style={{ display: 'flex', gap: 6, marginBottom: 14 }}>
-          {([['element', '元素属性'], ['body', '章体设置']] as const).map(([tab, label]) => (
+          {([['element', '排版'], ['body', '章体设置']] as const).map(([tab, label]) => (
             <button
               key={tab}
               onClick={() => setInspectorTab(tab)}
@@ -579,140 +628,100 @@ export default function App() {
           </div>
         )}
 
-        <Field label="章型">
-          <div style={{ display: 'flex', gap: 6 }}>
-            {([['circle', '圆章'], ['square', '方章']] as const).map(([shape, label]) => (
-              <button
-                key={shape}
-                onClick={() => patch((s) => { s.body.shape = shape as BodyShape; })}
-                style={{
-                  flex: 1,
-                  padding: '7px 0',
-                  fontSize: 12,
-                  cursor: 'pointer',
-                  borderRadius: 6,
-                  border: `1px solid ${spec.body.shape === shape ? '#b3261e' : '#ddd7cc'}`,
-                  background: spec.body.shape === shape ? '#fdf3f2' : '#fff',
-                  color: spec.body.shape === shape ? '#b3261e' : '#3d3a34',
-                }}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-        </Field>
-
-        {handleId !== 'none' && (
-          <Field label={`总高上限 ${spec.body.maxHeightMm ?? Math.round(4 + (handleDef?.heightRatio ?? 1) * 18)}mm`}>
-            <input
-              type="range" min={8} max={120} step={1}
-              value={spec.body.maxHeightMm ?? Math.round(4 + (handleDef?.heightRatio ?? 1) * 18)}
-              onChange={(e) => patch((s) => { s.body.maxHeightMm = Number(e.target.value); })}
-              style={{ width: '100%' }}
-            />
-            <div style={{ fontSize: 10.5, color: '#a39c91', lineHeight: 1.4, marginTop: 2 }}>
-              限的是成品总高（刻印片 4mm + 把手）。调矮只压把手，章面不变；扣掉片厚后不足 3mm 就不出把手。
-            </div>
-            <button
-              onClick={() => patch((s) => { delete s.body.maxHeightMm; })}
-              style={{ ...miniBtnStyle, marginTop: 4 }}
-            >
-              按原比例
-            </button>
-          </Field>
-        )}
-
-        {stats && (
-          <div style={{ fontSize: 11, color: '#7a746b', marginBottom: 10, lineHeight: 1.5 }}>
-            实际出模：章面 <strong>{stats.faceSizeMm.toFixed(1)}mm</strong> · 总高{' '}
-            <strong>{stats.heightMm.toFixed(1)}mm</strong>
-            {Math.abs(stats.faceSizeMm - spec.body.sizeMm) > 0.2 &&
-              `（设定 ${spec.body.sizeMm}mm，被总高上限压小了）`}
-          </div>
-        )}
-
-        <Field label={`章面尺寸 ${spec.body.sizeMm}mm`}>
-          <input
-            type="range" min={20} max={100} step={1} value={spec.body.sizeMm}
-            onChange={(e) => patch((s) => { s.body.sizeMm = Number(e.target.value); })}
-            style={{ width: '100%' }}
-          />
-          <div style={{ fontSize: 10.5, color: '#a39c91', lineHeight: 1.4, marginTop: 2 }}>
-            圆章＝直径，方章＝边长。改这里只会换刻印片大小，把手按 0.6 倍跟着缩放。
-          </div>
-        </Field>
-
-        <Field label="边框">
-          <select
-            value={spec.body.border.style}
-            onChange={(e) =>
-              patch((s) => {
-                const style = e.target.value as SealSpec['body']['border']['style'];
-                s.body.border.style = style;
-                // 每种形制的合理默认宽度；宽度是真值，style 不参与换算
-                s.body.border.widthMm =
-                  style === 'none' ? s.body.border.widthMm
-                    : style === 'thin' ? 0.8
-                    : style === 'thick' ? 1.6
-                    : 1.2;
-              })
-            }
-            style={inputStyle}
-          >
-            <option value="none">无边框</option>
-            <option value="thin">单线（细）</option>
-            <option value="thick">单线（粗）</option>
-            <option value="double">双线</option>
-          </select>
-        </Field>
-
-        {spec.body.border.style !== 'none' && (
-          <>
-            <Field label={`边框宽度 ${spec.body.border.widthMm}mm`}>
-              <input
-                type="range" min={0.4} max={3} step={0.1} value={spec.body.border.widthMm}
-                onChange={(e) => patch((s) => { s.body.border.widthMm = Number(e.target.value); })}
-                style={{ width: '100%' }}
-              />
-            </Field>
-            <Field label={`边框内缩 ${spec.body.border.insetMm}mm`}>
-              <input
-                type="range" min={0.3} max={5} step={0.1} value={spec.body.border.insetMm}
-                onChange={(e) => patch((s) => { s.body.border.insetMm = Number(e.target.value); })}
-                style={{ width: '100%' }}
-              />
-            </Field>
-          </>
-        )}
-
-        <Field label="浮雕">
-          <select
-            value={spec.relief.mode}
-            onChange={(e) => patch((s) => { s.relief.mode = e.target.value as 'raised' | 'engraved'; })}
-            style={inputStyle}
-          >
-            <option value="raised" disabled={handleId !== 'none'}>
-              阳刻（凸）{handleId !== 'none' ? ' — 有把手时不可用' : ''}
-            </option>
-            <option value="engraved">阴刻（凹）</option>
-          </select>
-        </Field>
-
-        <Field label={`浮雕深度 ${spec.relief.depthMm}mm`}>
-          <input
-            type="range" min={0.4} max={2} step={0.1} value={spec.relief.depthMm}
-            onChange={(e) => patch((s) => { s.relief.depthMm = Number(e.target.value); })}
-            style={{ width: '100%' }}
-          />
-        </Field>
-        <div style={{ fontSize: 11, color: '#a39c91', lineHeight: 1.5 }}>
-          打印方向固定为盖印面贴热床（face-down），不提供切换。
-        </div>
           </>
         )}
 
         {inspectorTab === 'element' && (
           <>
+        {isBorderSelected && (
+          <>
+            <Field label="外圈样式">
+              <select
+                value={spec.body.border.style}
+                onChange={(e) =>
+                  patch((s) => {
+                    const style = e.target.value as SealSpec['body']['border']['style'];
+                    s.body.border.style = style;
+                    s.body.border.widthMm =
+                      style === 'none' ? s.body.border.widthMm
+                        : style === 'thin' ? 0.8
+                        : style === 'thick' ? 1.6
+                        : 1.2;
+                  })
+                }
+                style={inputStyle}
+              >
+                <option value="none">无外圈</option>
+                <option value="thin">单线（细）</option>
+                <option value="thick">单线（粗）</option>
+                <option value="double">双线</option>
+              </select>
+            </Field>
+            {spec.body.border.style !== 'none' && (
+              <>
+                <Field label={`线宽 ${spec.body.border.widthMm}mm`}>
+                  <input
+                    type="range" min={0.4} max={3} step={0.1} value={spec.body.border.widthMm}
+                    onChange={(e) => patch((s) => { s.body.border.widthMm = Number(e.target.value); })}
+                    style={{ width: '100%' }}
+                  />
+                </Field>
+                <Field label={`离边 ${spec.body.border.insetMm}mm`}>
+                  <input
+                    type="range" min={0.3} max={5} step={0.1} value={spec.body.border.insetMm}
+                    onChange={(e) => patch((s) => { s.body.border.insetMm = Number(e.target.value); })}
+                    style={{ width: '100%' }}
+                  />
+                </Field>
+              </>
+            )}
+          </>
+        )}
+
+        {isOrnamentSelected && ringLayer && (
+          <>
+            <Field label="中心图案">
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button
+                  onClick={() => updateLayer(ringLayer.id, (l) => { if (l.kind === 'text') l.ringOrnament = 'none'; })}
+                  style={bodyTileStyle((ringLayer.ringOrnament ?? 'none') === 'none')}
+                >
+                  <span style={{ fontSize: 16, lineHeight: '30px' }}>○</span>
+                  <span style={{ fontSize: 10 }}>无</span>
+                </button>
+                {(['star', 'hexagram'] as const).map((oid) => (
+                  <button
+                    key={oid}
+                    title={oid === 'star' ? '五角星' : '六芒星'}
+                    onClick={() => updateLayer(ringLayer.id, (l) => { if (l.kind === 'text') l.ringOrnament = oid; })}
+                    style={bodyTileStyle((ringLayer.ringOrnament ?? 'none') === oid)}
+                  >
+                    <span
+                      style={{ display: 'block', width: 24, height: 24, color: (ringLayer.ringOrnament ?? 'none') === oid ? '#b3261e' : '#7a746b' }}
+                      dangerouslySetInnerHTML={{ __html: ORNAMENT_THUMBS[oid] }}
+                    />
+                    <span style={{ fontSize: 10 }}>{oid === 'star' ? '五角星' : '六芒星'}</span>
+                  </button>
+                ))}
+              </div>
+            </Field>
+            {ringLayer.ringOrnament && ringLayer.ringOrnament !== 'none' && (
+              <Field label={`图案尺寸 ${(ringLayer.ringOrnamentSizeMm ?? Math.round(spec.body.sizeMm * 0.28)).toFixed(0)}mm`}>
+                <input
+                  type="range" min={4} max={Math.round(spec.body.sizeMm * 0.6)} step={1}
+                  value={Math.round(ringLayer.ringOrnamentSizeMm ?? spec.body.sizeMm * 0.28)}
+                  onChange={(e) =>
+                    updateLayer(ringLayer.id, (l) => {
+                      if (l.kind === 'text') l.ringOrnamentSizeMm = Number(e.target.value);
+                    })
+                  }
+                  style={{ width: '100%' }}
+                />
+              </Field>
+            )}
+          </>
+        )}
+
         {textLayer && (
           <>
         {missing.missing.length > 0 && (
@@ -807,62 +816,6 @@ export default function App() {
           </div>
         </Field>
 
-        <Field label="排列">
-          <select
-            value={textLayer && textLayer.kind === 'text' ? textLayer.layout : 'horizontal'}
-            onChange={(e) =>
-              patch((s) => {
-                const l = s.layers.find((x) => x.id === editedId);
-                if (l && l.kind === 'text') l.layout = e.target.value as typeof l.layout;
-              })
-            }
-            style={inputStyle}
-          >
-            <option value="horizontal">横排</option>
-            <option value="vertical">竖排</option>
-            <option value="ring">环形</option>
-            <option value="huiwen">回文（四字）</option>
-          </select>
-        </Field>
-
-        {textLayer && textLayer.kind === 'text' && textLayer.layout === 'ring' && (
-          <Field label="中心图案">
-            <div style={{ display: 'flex', gap: 6 }}>
-              <button
-                onClick={() =>
-                  patch((s) => {
-                    const l = s.layers.find((x) => x.id === editedId);
-                    if (l && l.kind === 'text') l.ringOrnament = 'none';
-                  })
-                }
-                style={bodyTileStyle((textLayer.ringOrnament ?? 'none') === 'none')}
-              >
-                <span style={{ fontSize: 16, lineHeight: '30px' }}>○</span>
-                <span style={{ fontSize: 10 }}>无</span>
-              </button>
-              {(['star', 'hexagram'] as const).map((id) => (
-                <button
-                  key={id}
-                  title={id === 'star' ? '五角星' : '六芒星'}
-                  onClick={() =>
-                    patch((s) => {
-                      const l = s.layers.find((x) => x.id === editedId);
-                      if (l && l.kind === 'text') l.ringOrnament = id;
-                    })
-                  }
-                  style={bodyTileStyle((textLayer.ringOrnament ?? 'none') === id)}
-                >
-                  <span
-                    style={{ display: 'block', width: 24, height: 24, color: (textLayer.ringOrnament ?? 'none') === id ? '#b3261e' : '#7a746b' }}
-                    dangerouslySetInnerHTML={{ __html: ORNAMENT_THUMBS[id] }}
-                  />
-                  <span style={{ fontSize: 10 }}>{id === 'star' ? '五角星' : '六芒星'}</span>
-                </button>
-              ))}
-            </div>
-          </Field>
-        )}
-
         <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, marginBottom: 10, cursor: 'pointer' }}>
           <input
             type="checkbox"
@@ -884,40 +837,6 @@ export default function App() {
           </div>
         )}
 
-        <Field label={`位置 X ${textLayer.anchor.x.toFixed(2)}　Y ${textLayer.anchor.y.toFixed(2)}`}>
-          <input
-            type="range" min={-1} max={1} step={0.02} value={textLayer.anchor.x}
-            onChange={(e) => updateLayer(textLayer.id, (l) => { if (l.kind === 'text') l.anchor.x = Number(e.target.value); })}
-            style={{ width: '100%' }}
-          />
-          <input
-            type="range" min={-1} max={1} step={0.02} value={textLayer.anchor.y}
-            onChange={(e) => updateLayer(textLayer.id, (l) => { if (l.kind === 'text') l.anchor.y = Number(e.target.value); })}
-            style={{ width: '100%' }}
-          />
-          <button
-            onClick={() => updateLayer(textLayer.id, (l) => { l.anchor.x = 0; l.anchor.y = 0; })}
-            style={{ ...miniBtnStyle, marginTop: 4 }}
-          >
-            回到正中
-          </button>
-          <div style={{ fontSize: 10.5, color: '#a39c91', marginTop: 4, lineHeight: 1.4 }}>
-            0 = 正中，±1 ≈ 章面四分之三处。也可以直接在画布上拖。
-          </div>
-        </Field>
-
-        <Field label={`旋转 ${textLayer.transform.rotateDeg}°　缩放 ${textLayer.transform.scale.toFixed(2)}`}>
-          <input
-            type="range" min={-180} max={180} step={1} value={textLayer.transform.rotateDeg}
-            onChange={(e) => updateLayer(textLayer.id, (l) => { l.transform.rotateDeg = Number(e.target.value); })}
-            style={{ width: '100%' }}
-          />
-          <input
-            type="range" min={0.2} max={2} step={0.05} value={textLayer.transform.scale}
-            onChange={(e) => updateLayer(textLayer.id, (l) => { l.transform.scale = Number(e.target.value); })}
-            style={{ width: '100%' }}
-          />
-        </Field>
           </>
         )}
 
@@ -941,32 +860,6 @@ export default function App() {
               <input
                 type="range" min={5} max={40} step={1} value={l.widthMm}
                 onChange={(e) => updateImage(l.id, (x) => { x.widthMm = Number(e.target.value); })}
-                style={{ width: '100%' }}
-              />
-            </Field>
-
-            <Field label={`位置 X ${l.anchor.x.toFixed(2)}　Y ${l.anchor.y.toFixed(2)}（相对章面半径）`}>
-              <input
-                type="range" min={-1} max={1} step={0.02} value={l.anchor.x}
-                onChange={(e) => updateImage(l.id, (x) => { x.anchor.x = Number(e.target.value); })}
-                style={{ width: '100%' }}
-              />
-              <input
-                type="range" min={-1} max={1} step={0.02} value={l.anchor.y}
-                onChange={(e) => updateImage(l.id, (x) => { x.anchor.y = Number(e.target.value); })}
-                style={{ width: '100%' }}
-              />
-            </Field>
-
-            <Field label={`旋转 ${l.transform.rotateDeg}°　缩放 ${l.transform.scale.toFixed(2)}`}>
-              <input
-                type="range" min={-180} max={180} step={1} value={l.transform.rotateDeg}
-                onChange={(e) => updateImage(l.id, (x) => { x.transform.rotateDeg = Number(e.target.value); })}
-                style={{ width: '100%' }}
-              />
-              <input
-                type="range" min={0.2} max={2} step={0.05} value={l.transform.scale}
-                onChange={(e) => updateImage(l.id, (x) => { x.transform.scale = Number(e.target.value); })}
                 style={{ width: '100%' }}
               />
             </Field>
@@ -1039,7 +932,8 @@ export default function App() {
       >
         <ElementList
           layers={spec.layers}
-          selectedId={selectedLayer?.id ?? null}
+          extras={elementExtras}
+          selectedId={selectedLayer?.id ?? (isBorderSelected ? BORDER_ID : isOrnamentSelected ? ORNAMENT_ID : null)}
           onSelect={setSelectedId}
           onAddText={addTextLayer}
           onAddImage={(f) => { void pickImage(f); }}

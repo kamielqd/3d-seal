@@ -194,7 +194,30 @@ async function layoutTextWithFit(
     fitted,
   });
 
-  if (layer.autoFit === false || layer.layout === 'ring') return { polygons: first, fit: makeFit(false, requested) };
+  if (layer.autoFit === false) return { polygons: first, fit: makeFit(false, requested) };
+
+  if (layer.layout === 'ring') {
+    // 环形不按包围盒缩，按**弧长**缩：一圈能放下的长度是有限的，
+    // 字号一大，字就会在圆周上互相压住（方章上尤其明显）。
+    const radiusMm = Math.max(
+      1,
+      spec.body.sizeMm / 2 - spec.body.border.insetMm - spec.body.border.widthMm - requested * 0.55,
+    );
+    const spanFrac = Math.min(1, Math.max(0.05, Math.abs(layer.ringSpanDeg) / 360));
+    const glyphCount = Math.max(1, [...layer.text].filter((ch) => ch.trim() !== '').length);
+    // 每个字占的弧长至少要有 1.7 倍字号：字是**转着**排的，斜对角比字宽还大，
+    // 按 1.15 倍算相邻两字仍会压在一起（30mm 圆章四字实测）。
+    const arcMm = spanFrac * 2 * Math.PI * radiusMm;
+    const maxFontMm = arcMm / (glyphCount * 1.7);
+    if (requested > maxFontMm) {
+      const effective = Math.max(1.5, Math.round(maxFontMm * 100) / 100);
+      return {
+        polygons: shear(build(effective, layer.letterSpacingMm)),
+        fit: makeFit(true, effective),
+      };
+    }
+    return { polygons: first, fit: makeFit(false, requested) };
+  }
 
   const m = measure(first);
   // 圆章可用宽度取决于文字横带的高度，所以拿实测高度算弦长，再乘比例
