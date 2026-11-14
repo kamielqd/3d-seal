@@ -1,13 +1,12 @@
 /**
  * 元素清单：章面上的每个可编辑单元（文字层 / 图像层）在列表里一行。
  *
- * 设计对齐常见印章编辑器（元素叠加、可选中、可调顺序），
- * 但保留本职：只做「选中与排序」，不在这里改元素参数——参数在选中后的属性面板里。
- *
- * 顺序 = `spec.layers` 数组顺序，**不是** z 序：所有元素最终按并集进布尔，
- * 前后只影响列表里谁在上、以及同深度重叠检测的先后，不影响盖印结果。
+ * - 文字直接在这张卡片上改（选中后在卡片里编辑，而不是去右侧属性区再找一个「文字」输入框）
+ * - 排序用拖动，不用上下箭头：拖到哪一行前面就插到哪
+ * - 顺序 = `spec.layers` 数组顺序，不是 z 序：元素最终按并集进布尔
  */
 
+import { useRef, useState } from 'react';
 import type { Layer } from '../core/spec.ts';
 
 export interface ElementListProps {
@@ -18,17 +17,10 @@ export interface ElementListProps {
   onAddImage: (file: File) => void;
   onDelete: (id: string) => void;
   onDuplicate: (id: string) => void;
-  /** dir = -1 上移，+1 下移 */
-  onMove: (id: string, dir: -1 | 1) => void;
-}
-
-function layerName(layer: Layer, index: number): string {
-  if (layer.kind === 'text') {
-    const t = layer.text.trim();
-    if (t.length === 0) return `文字 ${index + 1}（空）`;
-    return t.length > 10 ? `${t.slice(0, 10)}…` : t;
-  }
-  return `图像 ${index + 1}`;
+  /** 把 id 移到 index 位置（拖动排序用） */
+  onReorder: (id: string, index: number) => void;
+  /** 文字层改字 */
+  onRename: (id: string, text: string) => void;
 }
 
 const rowStyle: React.CSSProperties = {
@@ -40,7 +32,6 @@ const rowStyle: React.CSSProperties = {
   border: '1px solid #eee7dc',
   background: '#fff',
   marginBottom: 4,
-  cursor: 'pointer',
   fontSize: 12,
 };
 
@@ -56,6 +47,7 @@ const iconStyle: React.CSSProperties = {
   justifyContent: 'center',
   fontSize: 11,
   fontWeight: 600,
+  cursor: 'grab',
 };
 
 const opBtnStyle: React.CSSProperties = {
@@ -75,6 +67,10 @@ const opBtnStyle: React.CSSProperties = {
 export default function ElementList(props: ElementListProps) {
   const { layers, selectedId } = props;
   const textCount = layers.filter((l) => l.kind === 'text').length;
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [overIndex, setOverIndex] = useState<number | null>(null);
+  /** 同一次拖拽里 dragstart 与 drop 可能挤在同一帧，state 还没刷，用 ref 兜底 */
+  const dragIdRef = useRef<string | null>(null);
 
   return (
     <div style={{ marginBottom: 12 }}>
@@ -113,47 +109,73 @@ export default function ElementList(props: ElementListProps) {
 
       {layers.map((l, i) => {
         const active = l.id === selectedId;
+        const dragging = dragId === l.id;
         return (
           <div
             key={l.id}
+            draggable
+            onDragStart={(e) => {
+              setDragId(l.id);
+              dragIdRef.current = l.id;
+              e.dataTransfer.effectAllowed = 'move';
+            }}
+            onDragOver={(e) => {
+              e.preventDefault();
+              setOverIndex(i);
+            }}
+            onDragEnd={() => {
+              dragIdRef.current = null;
+              setDragId(null);
+              setOverIndex(null);
+            }}
+            onDrop={(e) => {
+              e.preventDefault();
+              const moved = dragIdRef.current;
+              if (moved && moved !== l.id) props.onReorder(moved, i);
+              dragIdRef.current = null;
+              setDragId(null);
+              setOverIndex(null);
+            }}
             onClick={() => props.onSelect(l.id)}
             style={{
               ...rowStyle,
-              borderColor: active ? '#b3261e' : '#eee7dc',
+              borderColor: active ? '#b3261e' : overIndex === i && dragId ? '#b8860b' : '#eee7dc',
               background: active ? '#fdf6f5' : '#fff',
+              opacity: dragging ? 0.45 : 1,
             }}
           >
-            <span style={{ ...iconStyle, color: active ? '#b3261e' : '#7a746b' }}>
+            <span
+              style={{ ...iconStyle, color: active ? '#b3261e' : '#7a746b' }}
+              title="拖动排序"
+            >
               {l.kind === 'text' ? '文' : '图'}
             </span>
-            <span style={{ flex: '0 0 auto', fontSize: 10, color: '#a39c91' }}>{i + 1}</span>
-            <span
-              style={{
-                flex: 1,
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-                color: active ? '#b3261e' : '#3d3a34',
-              }}
-            >
-              {layerName(l, i)}
-            </span>
-            <button
-              onClick={(e) => { e.stopPropagation(); props.onMove(l.id, -1); }}
-              disabled={i === 0}
-              style={{ ...opBtnStyle, opacity: i === 0 ? 0.35 : 1 }}
-              title="上移一层"
-            >
-              ↑
-            </button>
-            <button
-              onClick={(e) => { e.stopPropagation(); props.onMove(l.id, 1); }}
-              disabled={i === layers.length - 1}
-              style={{ ...opBtnStyle, opacity: i === layers.length - 1 ? 0.35 : 1 }}
-              title="下移一层"
-            >
-              ↓
-            </button>
+
+            {l.kind === 'text' ? (
+              <input
+                value={l.text}
+                onClick={(e) => e.stopPropagation()}
+                onFocus={() => props.onSelect(l.id)}
+                onChange={(e) => props.onRename(l.id, e.target.value)}
+                placeholder="输入文字"
+                style={{
+                  flex: 1,
+                  minWidth: 0,
+                  border: 'none',
+                  background: 'transparent',
+                  padding: '1px 2px',
+                  fontSize: 12,
+                  color: active ? '#b3261e' : '#3d3a34',
+                  outline: active ? '1px solid #e8c9c4' : 'none',
+                  borderRadius: 3,
+                }}
+              />
+            ) : (
+              <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: active ? '#b3261e' : '#3d3a34' }}>
+                图像 {i + 1}
+              </span>
+            )}
+
             <button
               onClick={(e) => { e.stopPropagation(); props.onDuplicate(l.id); }}
               style={opBtnStyle}

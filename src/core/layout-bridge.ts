@@ -176,7 +176,17 @@ async function layoutTextWithFit(
   };
 
   const requested = layer.fontSizeMm;
-  const first = build(requested, layer.letterSpacingMm);
+  /** 伪斜体：整层按 12° 斜切（字体文件里没有 Italic 也能斜） */
+  const shear = (polys: LayoutPolygon[]): LayoutPolygon[] => {
+    if (layer.italic !== true) return polys;
+    const k = Math.tan((12 * Math.PI) / 180);
+    return polys.map((p) => ({
+      ...p,
+      points: p.points.map((q) => ({ x: q.x + k * q.y, y: q.y })),
+    }));
+  };
+  // 斜切放在量包围盒之前，自动适应才算得准
+  const first = shear(build(requested, layer.letterSpacingMm));
   const makeFit = (fitted: boolean, effectiveFontMm: number): LayerFit => ({
     layerId: layer.id,
     requestedFontMm: requested,
@@ -195,7 +205,7 @@ async function layoutTextWithFit(
   // 等比缩字号与字距：两者同时乘 k，包围盒也正好缩到 k 倍
   const effective = Math.round(requested * k * 100) / 100;
   return {
-    polygons: build(effective, layer.letterSpacingMm * k),
+    polygons: shear(build(effective, layer.letterSpacingMm * k)),
     fit: makeFit(true, effective),
   };
 }

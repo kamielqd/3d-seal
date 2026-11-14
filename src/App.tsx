@@ -26,7 +26,6 @@ import ElementList from './ui/ElementList.tsx';
 import CanvasEditor from './ui/CanvasEditor.tsx';
 import { BODY_THUMBS } from './ui/body-thumbs.ts';
 import { ORNAMENT_THUMBS } from './ui/ornament-thumbs.ts';
-import { PRESETS } from './core/presets.ts';
 import type { BuildResponse, ImagePayload } from './worker/geometry.worker.ts';
 import type { SolidMesh } from './geometry/types.ts';
 import type { Violation } from './geometry/printability.ts';
@@ -34,8 +33,6 @@ import type { BuildStats } from './geometry/pipeline.ts';
 
 export default function App() {
   const [spec, setSpec] = useState<SealSpec>(() => specFromHash() ?? createDefaultSpec());
-  /** 当前套用的预设 id；任何手动改动都会清掉，避免「显示是预设、实际已被改过」 */
-  const [activePreset, setActivePreset] = useState<string | undefined>();
   const [mesh, setMesh] = useState<ViewerMesh | null>(null);
   const [error, setError] = useState<string>('');
   const [notice, setNotice] = useState<string>('');
@@ -139,7 +136,8 @@ export default function App() {
                 dpi: 180,
                 mirror: false,
                 paddingMm: 1.5,
-                paper: { enabled: true },
+                // 画布要看得清字形与凹槽，所以不要纸纹：纸纹只在「盖印效果」导出时好看
+                paper: { enabled: false },
                 ink: {},
                 // 阴刻是「图案留白、其余上墨」，不传 faceRing 会把盖印效果整个画反
                 engraved: spec.relief.mode === 'engraved',
@@ -263,7 +261,6 @@ export default function App() {
   }));
 
   const patch = (fn: (s: SealSpec) => void) => {
-    setActivePreset(undefined);
     setSpec((prev) => {
       const next: SealSpec = structuredClone(prev);
       fn(next);
@@ -341,13 +338,22 @@ export default function App() {
     if (target.kind === 'image') setImageVersion((v) => v + 1);
   };
 
-  const moveLayer = (id: string, dir: -1 | 1) => {
+  /** 拖拽排序：把 id 插到 index 位置 */
+  const reorderLayer = (id: string, index: number) => {
     patch((s) => {
-      const i = s.layers.findIndex((l) => l.id === id);
-      const j = i + dir;
-      if (i < 0 || j < 0 || j >= s.layers.length) return;
-      const [row] = s.layers.splice(i, 1);
-      s.layers.splice(j, 0, row);
+      const from = s.layers.findIndex((l) => l.id === id);
+      if (from < 0) return;
+      const [row] = s.layers.splice(from, 1);
+      const to = Math.max(0, Math.min(s.layers.length, index));
+      s.layers.splice(to, 0, row);
+    });
+  };
+
+  /** 卡片上直接改字 */
+  const renameLayer = (id: string, text: string) => {
+    patch((s) => {
+      const l = s.layers.find((x) => x.id === id);
+      if (l && l.kind === 'text') l.text = text;
     });
   };
 
@@ -409,25 +415,21 @@ export default function App() {
       >
         <span style={{ fontSize: 14, fontWeight: 600 }}>印章工坊</span>
         <span style={{ fontSize: 11, color: '#a39c91' }}>3D 可打印印章生成器</span>
-        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginLeft: 10 }}>
-          {PRESETS.map((p) => (
+        <div style={{ display: 'flex', gap: 4, marginLeft: 10 }}>
+          {([['circle', '圆章'], ['square', '方章']] as const).map(([shape, label]) => (
             <button
-              key={p.id}
-              title={p.note}
-              onClick={() => {
-                setSpec(p.build());
-                setActivePreset(p.id);
-              }}
+              key={shape}
+              onClick={() => patch((s) => { s.body.shape = shape as BodyShape; })}
               style={{
                 ...miniBtnStyle,
-                padding: '4px 8px',
-                fontSize: 11.5,
-                ...(activePreset === p.id
+                padding: '5px 14px',
+                fontSize: 12,
+                ...(spec.body.shape === shape
                   ? { borderColor: '#b3261e', color: '#b3261e', background: '#fdf3f2' }
                   : {}),
               }}
             >
-              {p.name}
+              {label}
             </button>
           ))}
         </div>
@@ -499,7 +501,7 @@ export default function App() {
 
         {inspectorTab === 'body' && (
           <>
-        <Field label="主体样式">
+        <Field label="把手">
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
             {BODY_STYLES.map((st) => (
               <button
@@ -570,27 +572,27 @@ export default function App() {
         )}
 
         <Field label="章型">
-          <select
-            value={spec.body.shape}
-            disabled={Boolean(libStyle) && libStyle !== 'plate'}
-            onChange={(e) => patch((s) => { s.body.shape = e.target.value as BodyShape; })}
-            style={{ ...inputStyle, opacity: libStyle && libStyle !== 'plate' ? 0.55 : 1 }}
-          >
-            <option value="square">方形</option>
-            <option value="circle">圆形</option>
-            <option value="polygon">正多边形</option>
-          </select>
+          <div style={{ display: 'flex', gap: 6 }}>
+            {([['circle', '圆章'], ['square', '方章']] as const).map(([shape, label]) => (
+              <button
+                key={shape}
+                onClick={() => patch((s) => { s.body.shape = shape as BodyShape; })}
+                style={{
+                  flex: 1,
+                  padding: '7px 0',
+                  fontSize: 12,
+                  cursor: 'pointer',
+                  borderRadius: 6,
+                  border: `1px solid ${spec.body.shape === shape ? '#b3261e' : '#ddd7cc'}`,
+                  background: spec.body.shape === shape ? '#fdf3f2' : '#fff',
+                  color: spec.body.shape === shape ? '#b3261e' : '#3d3a34',
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
         </Field>
-
-        {spec.body.shape === 'polygon' && (
-          <Field label={`边数 ${spec.body.sides}`}>
-            <input
-              type="range" min={3} max={12} value={spec.body.sides}
-              onChange={(e) => patch((s) => { s.body.sides = Number(e.target.value); })}
-              style={{ width: '100%' }}
-            />
-          </Field>
-        )}
 
         {(libStyle === 'cylinder' || libStyle === 'column') && (
           <Field
@@ -713,19 +715,6 @@ export default function App() {
           <>
         {textLayer && (
           <>
-        <Field label="文字">
-          <input
-            value={textLayer && textLayer.kind === 'text' ? textLayer.text : ''}
-            onChange={(e) =>
-              patch((s) => {
-                const l = s.layers.find((x) => x.id === editedId);
-                if (l && l.kind === 'text') l.text = e.target.value;
-              })
-            }
-            style={inputStyle}
-          />
-        </Field>
-
         {missing.missing.length > 0 && (
           <div style={warnStyle}>
             <div style={{ fontWeight: 600, marginBottom: 4 }}>
@@ -746,21 +735,76 @@ export default function App() {
           </div>
         )}
 
-        <Field label="字体">
-          <select
-            value={fontId}
-            onChange={(e) =>
-              patch((s) => {
-                const l = s.layers.find((x) => x.id === editedId);
-                if (l && l.kind === 'text') l.fontId = e.target.value;
-              })
-            }
-            style={inputStyle}
-          >
-            {listFonts().map((f) => (
-              <option key={f.id} value={f.id}>{f.name}</option>
-            ))}
-          </select>
+        <Field label="文字属性">
+          <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+            <select
+              value={fontId}
+              onChange={(e) =>
+                patch((s) => {
+                  const l = s.layers.find((x) => x.id === editedId);
+                  if (l && l.kind === 'text') l.fontId = e.target.value;
+                })
+              }
+              style={{ ...inputStyle, flex: 1, minWidth: 0, padding: '4px 6px', fontSize: 12 }}
+            >
+              {listFonts().map((f) => (
+                <option key={f.id} value={f.id}>{f.name}</option>
+              ))}
+            </select>
+            <select
+              value={String(textLayer.fontSizeMm)}
+              onChange={(e) =>
+                patch((s) => {
+                  const l = s.layers.find((x) => x.id === editedId);
+                  if (l && l.kind === 'text') l.fontSizeMm = Number(e.target.value);
+                })
+              }
+              style={{ width: 62, padding: '4px 2px', fontSize: 12, border: '1px solid #ddd7cc', borderRadius: 6, background: '#fff' }}
+            >
+              {[3, 3.5, 4, 4.5, 5, 5.5, 6, 6.5, 7, 7.5, 8, 9, 10, 11, 12, 14].map((v) => (
+                <option key={v} value={v}>{v}</option>
+              ))}
+            </select>
+            <button
+              title="加粗"
+              onClick={() =>
+                patch((s) => {
+                  const l = s.layers.find((x) => x.id === editedId);
+                  if (l && l.kind === 'text') l.bold = l.bold !== true;
+                })
+              }
+              style={{
+                width: 30, height: 28, borderRadius: 6, cursor: 'pointer',
+                border: `1px solid ${textLayer.bold === true ? '#b3261e' : '#ddd7cc'}`,
+                background: textLayer.bold === true ? '#fdf3f2' : '#fff',
+                color: textLayer.bold === true ? '#b3261e' : '#3d3a34',
+                fontWeight: 700, fontSize: 13,
+              }}
+            >
+              B
+            </button>
+            <button
+              title="斜体"
+              onClick={() =>
+                patch((s) => {
+                  const l = s.layers.find((x) => x.id === editedId);
+                  if (l && l.kind === 'text') l.italic = l.italic !== true;
+                })
+              }
+              style={{
+                width: 30, height: 28, borderRadius: 6, cursor: 'pointer',
+                border: `1px solid ${textLayer.italic === true ? '#b3261e' : '#ddd7cc'}`,
+                background: textLayer.italic === true ? '#fdf3f2' : '#fff',
+                color: textLayer.italic === true ? '#b3261e' : '#3d3a34',
+                fontStyle: 'italic', fontSize: 14, fontFamily: 'Georgia, serif',
+              }}
+            >
+              I
+            </button>
+          </div>
+          <div style={{ fontSize: 10.5, color: '#a39c91', marginTop: 4, lineHeight: 1.4 }}>
+            字号单位 mm；加粗/斜体是伪粗体与 12° 斜切，不依赖字体文件
+          </div>
         </Field>
 
         <Field label="排列">
@@ -818,18 +862,6 @@ export default function App() {
             </div>
           </Field>
         )}
-
-        <Field label={`字号 ${textLayer && textLayer.kind === 'text' ? textLayer.fontSizeMm : 7}mm`}>
-          <input
-            type="range" min={3} max={14} step={0.5}
-            value={textLayer && textLayer.kind === 'text' ? textLayer.fontSizeMm : 7}
-            onChange={(e) => patch((s) => {
-              const l = s.layers.find((x) => x.id === editedId);
-              if (l && l.kind === 'text') l.fontSizeMm = Number(e.target.value);
-            })}
-            style={{ width: '100%' }}
-          />
-        </Field>
 
         <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, marginBottom: 10, cursor: 'pointer' }}>
           <input
@@ -1013,7 +1045,8 @@ export default function App() {
           onAddImage={(f) => { void pickImage(f); }}
           onDelete={deleteLayer}
           onDuplicate={duplicateLayer}
-          onMove={moveLayer}
+          onReorder={reorderLayer}
+          onRename={renameLayer}
         />
       </aside>
 

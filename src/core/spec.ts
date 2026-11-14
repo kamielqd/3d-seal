@@ -73,7 +73,7 @@ export const BODY_STYLES: ReadonlyArray<{
   { id: 'cylinder', name: '圆柱', note: '细高圆柱，握柱子盖', heightRatio: 2.150 },
   { id: 'column', name: '立方柱', note: '细高方柱，握柱子盖', heightRatio: 2.198 },
   { id: 'dome', name: '石墩', note: '圆鼓身 + 双层台座，敦实', heightRatio: 0.965 },
-  { id: 'plate', name: '测试片', note: '3mm 厚平板，可设方形/圆形/正多边形，用来试印或做薄章', heightRatio: 0.1 },
+  { id: 'plate', name: '无把手', note: '只有 4mm 厚刻印片，不接把手：适合平放收纳、或自己另配底座', heightRatio: 0.1 },
 ];
 
 export interface ReliefConfig {
@@ -107,6 +107,10 @@ export interface TextLayer {
    * 实际生效的字号由 `layoutFlatWithFit()` 回传，面板上要如实显示。
    */
   autoFit?: boolean;
+  /** 加粗：字形轮廓整体外扩（等价于伪粗体，不依赖字体文件里有没有 Bold） */
+  bold?: boolean;
+  /** 斜体：整层按 12° 斜切（伪斜体，同样不依赖字体文件） */
+  italic?: boolean;
   lineHeight: number;
   /** ring 专用 */
   ringStartDeg: number;
@@ -231,6 +235,8 @@ export function createTextLayer(init: Partial<TextLayer> = {}): TextLayer {
     layout: 'horizontal',
     fontSizeMm: 7,
     letterSpacingMm: 0.6,
+    bold: false,
+    italic: false,
     lineHeight: 1.15,
     ringStartDeg: 90,
     ringSpanDeg: 240,
