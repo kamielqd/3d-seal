@@ -136,9 +136,9 @@ export default function App() {
                 dpi: 180,
                 mirror: false,
                 paddingMm: 1.5,
-                // 画布要看得清字形与凹槽，所以不要纸纹：纸纹只在「盖印效果」导出时好看
+                // 画布要看得清字形与凹槽，所以不要纸纹和飞白：那些只在「盖印效果」展示时好看
                 paper: { enabled: false },
-                ink: {},
+                ink: { flyWhite: 0, mottle: 0.15, edgeIrregularity: 0.2 },
                 // 阴刻是「图案留白、其余上墨」，不传 faceRing 会把盖印效果整个画反
                 engraved: spec.relief.mode === 'engraved',
                 faceRing: faceRingOf(spec),

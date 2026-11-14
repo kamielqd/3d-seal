@@ -188,7 +188,7 @@ export default function CanvasEditor(props: CanvasEditorProps) {
           return (
             <g key={layer.id} transform={lagX || lagY ? `translate(${lagX.toFixed(3)} ${lagY.toFixed(3)})` : undefined}>
               {active && (
-                <path d={d} fill="#b3261e" fillOpacity={0.14} pointerEvents="none" />
+                <path d={d} fill="#1a73e8" fillOpacity={0.16} pointerEvents="none" />
               )}
               {/* 热区：细笔画按真实宽度点不中，用一条宽透明描边把命中区撑开 */}
               <path
@@ -221,15 +221,25 @@ export default function CanvasEditor(props: CanvasEditorProps) {
         {selBox && (() => {
           const lagX = drag && drag.id === selected?.id ? (drag.desiredX - selected.anchor.x) * factor : 0;
           const lagY = drag && drag.id === selected?.id ? (drag.desiredY - selected.anchor.y) * factor : 0;
+          const x = selBox.minX + lagX;
+          const y = selBox.minY + lagY;
+          const w = Math.max(0.4, selBox.maxX - selBox.minX);
+          const h = Math.max(0.4, selBox.maxY - selBox.minY);
           return (
-            <rect
-              x={selBox.minX + lagX} y={selBox.minY + lagY}
-              width={Math.max(0.4, selBox.maxX - selBox.minX)}
-              height={Math.max(0.4, selBox.maxY - selBox.minY)}
-              fill="none" stroke="#b3261e" strokeWidth={sizeMm * 0.005}
-              strokeDasharray={`${sizeMm * 0.012} ${sizeMm * 0.01}`}
-              pointerEvents="none"
-            />
+            <>
+              {/* 先铺一层白底：红墨上画红色选框等于看不见 */}
+              <rect
+                x={x} y={y} width={w} height={h}
+                fill="none" stroke="#ffffff" strokeWidth={sizeMm * 0.012}
+                pointerEvents="none"
+              />
+              <rect
+                x={x} y={y} width={w} height={h}
+                fill="none" stroke="#1a73e8" strokeWidth={sizeMm * 0.006}
+                strokeDasharray={`${sizeMm * 0.014} ${sizeMm * 0.008}`}
+                pointerEvents="none"
+              />
+            </>
           );
         })()}
       </g>
