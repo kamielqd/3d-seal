@@ -144,7 +144,7 @@ export default function App() {
             setPreviewUrl(
               renderPreviewToDataURL(rings, {
                 sizeMm: spec.body.sizeMm,
-                dpi: 180,
+                dpi: 600,
                 mirror: false,
                 paddingMm: 1.5,
                 // 画布要看得清字形与凹槽，所以不要纸纹和飞白：那些只在「盖印效果」展示时好看
@@ -514,7 +514,7 @@ export default function App() {
         {inspectorTab === 'body' && (
           <>
         <Field label="把手">
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, minmax(0, 1fr))', gap: 6 }}>
             {HANDLE_OPTIONS.map((st) => (
               <button
                 key={st.id}
@@ -526,7 +526,7 @@ export default function App() {
                     if (st.id !== 'none') s.relief.mode = 'engraved';
                   })
                 }
-                style={bodyTileStyle(handleId === st.id)}
+                style={{ ...bodyTileStyle(handleId === st.id), width: 'auto' }}
               >
                 {st.id === 'none' ? (
                   <span
@@ -638,7 +638,7 @@ export default function App() {
             style={{ width: '100%' }}
           />
           <div style={{ fontSize: 10.5, color: '#a39c91', lineHeight: 1.4, marginTop: 2 }}>
-            正方形＝边长，圆形＝直径，正多边形＝外接圆直径
+            圆章＝直径，方章＝边长。改这里只会换刻印片大小，把手按 0.6 倍跟着缩放。
           </div>
         </Field>
 

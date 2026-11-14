@@ -6,7 +6,7 @@
  * 文字排版仍在主线程（纯数学 <1ms，要跟手）；这里只吃排好的轮廓。
  */
 import { buildSeal, borderPolygons, lastBuildStats, type BuildStats } from '../geometry/pipeline.ts';
-import { getManifold } from '../geometry/crosssection.ts';
+import { fromCrossSection, getManifold, inflate, sectionFromPolygons } from '../geometry/crosssection.ts';
 import { combinePolygons, traceLayer } from '../geometry/trace.ts';
 import type { Polygon2D } from '../geometry/types.ts';
 import type { SealBuildSpec } from '../geometry/pipeline.ts';
@@ -109,7 +109,32 @@ ctx.onmessage = async (ev: MessageEvent<BuildRequest>) => {
       // 保留每层自己的轮廓，几何层才能判断「哪块属于哪层」，做重叠检测
       layerGroups.push({ id: layer.id, kind: 'image', polygons: imagePolys });
     }
-    const all = combinePolygons(polygons, ...imageGroups);
+    // 伪粗体：字体文件里没有 Bold，就把这一层的轮廓整体外扩一档
+    // （外扩量按字号给，7mm 字号约 +0.14mm/边，笔画大致翻一倍粗）
+    let mergedSource: Polygon2D[] = polygons;
+    if (polygonsByLayer) {
+      let boldCount = 0;
+      for (const layer of spec.layers ?? []) {
+        if (layer.kind !== 'text' || layer.bold !== true) continue;
+        const polys = polygonsByLayer[layer.id];
+        if (!polys || polys.length === 0) continue;
+        const delta = Math.max(0.02, Math.min(0.3, 0.02 * layer.fontSizeMm));
+        const section = await sectionFromPolygons(polys);
+        const grown = inflate(await getManifold(), section, delta);
+        section.delete();
+        const fat = fromCrossSection(await getManifold(), grown);
+        grown.delete();
+        if (fat.length === 0) continue;
+        polygonsByLayer[layer.id] = fat;
+        const grp = layerGroups.find((g) => g.id === layer.id);
+        if (grp) grp.polygons = fat;
+        boldCount += 1;
+      }
+      // 外扩后必须用「按层重建」的并集，否则加粗只作用于分组、不作用于最终图案
+      if (boldCount > 0) mergedSource = Object.values(polygonsByLayer).flat();
+    }
+
+    const all = combinePolygons(mergedSource, ...imageGroups);
 
     // 边框和实体同源（同一个 borderSection），所以预览里也必须有，否则「模型有边框、预览没有」
     const borderRings = await borderPolygons(spec.body);
