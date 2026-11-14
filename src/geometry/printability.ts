@@ -715,26 +715,28 @@ function checkSize(body: BodyConfig, preset: Preset): Violation[] {
     });
   }
 
-  // 平板底板的翘边：FDM 上跨厚比（章面跨度 / 底板厚）超过 25 就开始翘。
-  // 30mm/2.5mm = 12（正常），60/2.5 = 24（临界），100/2.5 = 40（会翘）。
-  // 只对 4 个内置模型跳过：它们是实心模型，没有「底板厚度」这个概念；
-  // 测试片（plate）是参数化平板，恰恰要用这条判。
-  const styleId = (body as BodyConfig & { readonly styleId?: unknown }).styleId;
-  const isLibraryModel = styleId !== undefined && styleId !== 'plate';
-  if (!isLibraryModel) {
+  // 刻印片的翘边：FDM 上跨厚比（章面跨度 / 片厚）超过阈值就开始翘。
+  // 30mm/4mm = 7.5（正常），60/2.5 = 24（临界），100/2.5 = 40（会翘），100/4 = 25。
+  //
+  // 阈值取 24 而不是 25：4mm 刻印片把 100mm 那档正好推到 25，用 `>25` 就永远不响了
+  // （等于给最大合法尺寸开了一个静默口子）。取 24 让 100mm+4mm 照样报，老场景不变。
+  //
+  // 这里不再按 `styleId` 跳过：刻印片现在**始终存在**（把手只是接在它背面），
+  // 所以「片有多厚」对每一枚印章都成立。
+  {
     const span = Math.max(1, body.sizeMm);
     const thickness = Math.max(0.8, body.baseThicknessMm);
     const slenderness = span / thickness;
-    if (slenderness > 25) {
-      const suggest = Math.ceil((span / 25) * 10) / 10;
+    if (slenderness > 24) {
+      const suggest = Math.ceil((span / 24) * 10) / 10;
       out.push({
         rule: 'base.thickness',
         severity: 'warn',
         measured: round2(slenderness),
-        limit: 25,
+        limit: 24,
         message:
-          `章面 ${round2(span)}mm / 底板 ${round2(thickness)}mm（跨厚比 ${round2(slenderness)}）：` +
-          `FDM 打这么大的平板底板容易翘边。建议底板 ≥ ${suggest}mm（跨厚比 ≤25），或缩小章面、加 brim。`,
+          `章面 ${round2(span)}mm / 刻印片 ${round2(thickness)}mm（跨厚比 ${round2(slenderness)}）：` +
+          `FDM 打这么大的平板容易翘边。建议刻印片 ≥ ${suggest}mm（跨厚比 ≤24），或缩小章面、加 brim。`,
         fix: 'fix:thicken',
       });
     }

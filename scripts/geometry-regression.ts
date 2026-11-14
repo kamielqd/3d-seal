@@ -573,78 +573,152 @@ function meshVolume(mesh: SolidMesh): number {
 }
 
 const SIZE_MM = 30;
-const librarySpec = (styleId: BodyStyleId) => ({
-  ...engravedSpecMini,
-  body: { ...baseSpec.body, sizeMm: SIZE_MM, styleId },
-  print: { ...spec.print, process: 'fdm' as const, minStrokeMm: 0.4, minGapMm: 0.3 },
-});
+/** 产品默认的刻印片厚度。测试里显式写，不依赖 spec 默认值什么时候翻成 4。 */
+const PLATE_T = 4;
+
+/**
+ * 印章 = 刻印片（始终存在）+ 可选把手。
+ * `handleId` 指 `body.styleId`：`'none'` = 无把手，4 个模型 = 接在片背面。
+ */
+function sealSpecFor(
+  shape: 'circle' | 'square',
+  handleId: BodyStyleId | 'none',
+  extra: Record<string, unknown> = {},
+) {
+  return {
+    ...engravedSpecMini,
+    body: {
+      ...baseSpec.body,
+      sizeMm: SIZE_MM,
+      shape,
+      styleId: handleId,
+      baseThicknessMm: PLATE_T,
+      ...extra,
+    },
+    print: { ...spec.print, process: 'fdm' as const, minStrokeMm: 0.4, minGapMm: 0.3 },
+  } as unknown as Parameters<typeof buildSeal>[0];
+}
+
+/* ---------- 12. 圆/方 × 有把手/无把手：足迹 / 总高 / zMin / status ---------- */
+for (const shape of ['circle', 'square'] as const) {
+  for (const handleId of ['none', 'classic'] as const) {
+    const label = `${shape === 'circle' ? '圆章' : '方章'} · ${handleId === 'none' ? '无把手' : '有把手'}`;
+    const mesh = await buildSeal(sealSpecFor(shape, handleId), textLikePolygons());
+    const stats = lastBuildStats();
+    const b = meshBounds(mesh);
+    const footprint = Math.max(b.max[0]! - b.min[0]!, b.max[1]! - b.min[1]!);
+    const height = b.max[2]! - b.min[2]!;
+
+    check(mesh.status === 'NoError', `${label}：status NoError`, `${mesh.triangleCount} 面`);
+    check(Math.abs(footprint - SIZE_MM) < 0.05, `${label}：足迹 = sizeMm`, `${footprint.toFixed(2)}mm`);
+    check(Math.abs(b.min[2]!) < 0.05, `${label}：zMin = 0`, `${b.min[2]!.toFixed(3)}`);
+    check(
+      Math.abs(height - (stats?.heightMm ?? -1)) < 0.05,
+      `${label}：回传 heightMm = 网格实测总高`,
+      `${stats?.heightMm?.toFixed(2)} vs ${height.toFixed(2)}`,
+    );
+    check(
+      stats?.faceShape === shape,
+      `${label}：回传 faceShape 由刻印片决定`,
+      `faceShape=${stats?.faceShape}`,
+    );
+
+    if (handleId === 'none') {
+      check(
+        Math.abs(height - PLATE_T) < 0.05,
+        `${label}：总高 = 刻印片厚度 ${PLATE_T}mm`,
+        `${height.toFixed(2)}mm`,
+      );
+      check(stats?.handleStyleId === null, `${label}：handleStyleId = null`, String(stats?.handleStyleId));
+    } else {
+      check(stats?.handleStyleId === 'classic', `${label}：handleStyleId = classic`, String(stats?.handleStyleId));
+      check(
+        Math.abs(height - (PLATE_T + (stats?.handleHeightMm ?? 0))) < 0.1,
+        `${label}：总高 = 片厚 + 把手高`,
+        `${height.toFixed(2)} vs ${PLATE_T} + ${stats?.handleHeightMm?.toFixed(2)}`,
+      );
+    }
+  }
+}
+
+/* ---------- 12a. 把手永远不伸到刻印片外（0.6 规则，含几何实测） ---------- */
+/**
+ * 只看刻印片**以上**的顶点，量它们的 XY 跨度 = 把手真实足迹。
+ * 比读 stats 更硬：直接证明圈外没有把手材料。
+ */
+function meshXyExtentAboveZ(mesh: SolidMesh, zMin: number): number {
+  const { vertProperties, numProp } = mesh;
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (let i = 0; i < vertProperties.length; i += numProp) {
+    if (vertProperties[i + 2]! <= zMin) continue;
+    const x = vertProperties[i]!;
+    const y = vertProperties[i + 1]!;
+    if (x < minX) minX = x;
+    if (x > maxX) maxX = x;
+    if (y < minY) minY = y;
+    if (y > maxY) maxY = y;
+  }
+  return Number.isFinite(minX) ? Math.max(maxX - minX, maxY - minY) : 0;
+}
 
 for (const style of BODY_STYLES) {
-  const sealSpec = librarySpec(style.id);
-  const polygons = textLikePolygons();
-  const mesh = await buildSeal(sealSpec, polygons);
-  const b = meshBounds(mesh);
-  const footprint = Math.max(b.max[0]! - b.min[0]!, b.max[1]! - b.min[1]!);
-  const height = b.max[2]! - b.min[2]!;
+  for (const sizeMm of [20, 100]) {
+    const mesh = await buildSeal(sealSpecFor('circle', style.id, { sizeMm }), textLikePolygons());
+    const stats = lastBuildStats();
+    const limit = sizeMm * 0.6;
+    const geometric = meshXyExtentAboveZ(mesh, PLATE_T + 0.005);
+    check(
+      geometric <= limit + 0.02,
+      `${style.label} · ${sizeMm}mm 圆片：把手几何足迹 ≤ 0.6× 片`,
+      `实测 ${geometric.toFixed(2)}mm ≤ ${limit.toFixed(1)}mm`,
+    );
+    check(
+      (stats?.handleFaceMm ?? 0) <= limit + 0.02 && (stats?.handleFaceMm ?? 0) > 0,
+      `${style.label} · ${sizeMm}mm：回传 handleFaceMm 在 0.6× 以内`,
+      `handleFaceMm=${stats?.handleFaceMm?.toFixed(2)}`,
+    );
+  }
+}
 
-  // 母体（同尺寸缩放后）的体积，用来证明图案真的刻进去了
-  const mother = await loadBody(style.id);
-  const motherBox = mother.boundingBox();
-  const footprintCm = Math.max(motherBox.max[0] - motherBox.min[0], motherBox.max[1] - motherBox.min[1]);
-  const scale = SIZE_MM / footprintCm;
-  const scaledMother = mother.scale([scale, scale, scale]);
-  const motherVolume = scaledMother.volume();
-  scaledMother.delete();
-
-  // 期望高度：源模型高度（源单位）× 同一个 scale
-  const expectedHeight = style.sourceBoxCm.z * scale;
-
-  check(mesh.status === 'NoError', `${style.label}：status NoError`, `${mesh.status}`);
-  check(mesh.triangleCount < 20000, `${style.label}：面数 < 2 万`, `${mesh.triangleCount} 面`);
+/* ---------- 12b0. face-up 只对「无把手 + 阳刻」成立 ---------- */
+{
+  let faceUpHandleStatus = '';
+  try {
+    await buildSeal(
+      { ...sealSpecFor('square', 'classic'), orientation: 'face-up' as const },
+      textLikePolygons(),
+    );
+  } catch (error) {
+    faceUpHandleStatus = error instanceof SealGeometryError ? error.status : 'unknown';
+  }
   check(
-    Math.abs(footprint - SIZE_MM) < 0.2,
-    `${style.label}：底面足迹 ≈ ${SIZE_MM}mm`,
-    `${footprint.toFixed(2)}mm（源 ${style.sourceBoxCm.x}cm × ${scale.toFixed(3)}）`,
-  );
-  check(
-    Math.abs(height - expectedHeight) < 0.5,
-    `${style.label}：高度 ≈ 源比例 × scale`,
-    `${height.toFixed(2)}mm vs 期望 ${expectedHeight.toFixed(2)}mm`,
-  );
-  check(Math.abs(b.min[2]!) < 0.05, `${style.label}：底面贴 z=0`, `zMin=${b.min[2]!.toFixed(3)}`);
-  check(
-    meshVolume(mesh) < motherVolume - 1,
-    `${style.label}：刻完体积小于母体（真刻进去了）`,
-    `${meshVolume(mesh).toFixed(1)} < ${motherVolume.toFixed(1)} mm³（刻掉 ${(motherVolume - meshVolume(mesh)).toFixed(1)}）`,
-  );
-  check(
-    !(mesh.violations ?? []).some((v) => v.severity === 'error'),
-    `${style.label}：没有阻断导出的 error`,
-    (mesh.violations ?? []).map((v) => `${v.severity}:${v.rule}`).join(',') || '无',
+    faceUpHandleStatus === 'FaceUpRequiresNoHandle',
+    'face-up + 有把手：抛 FaceUpRequiresNoHandle（翻面后把手全在床下）',
+    faceUpHandleStatus || '未抛错',
   );
 
-  // 回传：章面形状 / 实际足迹 / 实际总高（UI 面板靠这三个）
-  const stats = lastBuildStats();
-  check(
-    stats?.faceShape === style.faceShape,
-    `${style.label}：回传 faceShape = ${style.faceShape}`,
-    `faceShape=${stats?.faceShape}`,
+  // 对照：无把手 + 阳刻 + face-up 仍然可打（平装阳刻那条路）
+  const up = await buildSeal(
+    {
+      ...sealSpecFor('square', 'none', { border: { style: 'none', widthMm: 1.2, insetMm: 1.2 } }),
+      relief: { mode: 'raised' as const, depthMm: 1.2 },
+      orientation: 'face-up' as const,
+    },
+    textLikePolygons(),
   );
   check(
-    Math.abs((stats?.faceSizeMm ?? 0) - SIZE_MM) < 0.2,
-    `${style.label}：回传 faceSizeMm ≈ ${SIZE_MM}mm`,
-    `faceSizeMm=${stats?.faceSizeMm?.toFixed(2)}`,
-  );
-  check(
-    Math.abs((stats?.heightMm ?? 0) - expectedHeight) < 0.5,
-    `${style.label}：回传 heightMm ≈ ${expectedHeight.toFixed(2)}mm`,
-    `heightMm=${stats?.heightMm?.toFixed(2)}`,
+    up.status === 'NoError' && Math.abs(meshBounds(up).min[2]!) < 0.05,
+    'face-up + 无把手 + 阳刻：能生成且 zMin = 0',
+    `${up.triangleCount} 面 zMin=${meshBounds(up).min[2]!.toFixed(3)}`,
   );
 }
 
 /* ---------- 12b. 圆章出界要报错，不能静默削掉 ---------- */
 {
-  const circleSpec = librarySpec('classic'); // classic 是圆章
+  const circleSpec = sealSpecFor('circle', 'none');
   // 30mm 圆章半径 15mm；这条矩形最远点 hypot(16,2)=16.1mm，已经出圆
   const outOfCircle: Polygon2D[] = [{ outer: rect(12, -2, 16, 2), holes: [] }];
   const mesh = await buildSeal(circleSpec, outOfCircle);
@@ -655,8 +729,8 @@ for (const style of BODY_STYLES) {
     `severity=${bounds?.severity} measured=${bounds?.measured} limit=${bounds?.limit}`,
   );
 
-  // 对照：同一图案放进方章（column）不该报
-  const squareSpec = librarySpec('column');
+  // 对照：同一图案放进方章不该报
+  const squareSpec = sealSpecFor('square', 'none');
   const squareMesh = await buildSeal(squareSpec, [{ outer: rect(-2, -2, 2, 2), holes: [] }]);
   check(
     !(squareMesh.violations ?? []).some((v) => v.rule === 'pattern.bounds'),
@@ -665,55 +739,109 @@ for (const style of BODY_STYLES) {
   );
 }
 
-/* ---------- 12c. 总高上限：取小 + 明确提示 ---------- */
+/* ---------- 12c. 总高上限只管成品总高：压把手、不动刻印片 ---------- */
 {
-  const tallSpec = {
-    ...librarySpec('cylinder'),
-    body: { ...baseSpec.body, sizeMm: 30, styleId: 'cylinder' as const, maxHeightMm: 30 },
-  };
-  const mesh = await buildSeal(tallSpec, textLikePolygons());
+  // 上限 12mm：片 4mm，把手只剩 8mm（自然状态是 16.78mm）
+  const capped = await buildSeal(sealSpecFor('square', 'classic', { maxHeightMm: 12 }), textLikePolygons());
   const stats = lastBuildStats();
-  check(mesh.status === 'NoError', '总高上限：仍然 NoError', mesh.status);
+  check(capped.status === 'NoError', '总高上限：仍然 NoError', capped.status);
   check(
-    Math.abs((stats?.heightMm ?? 0) - 30) < 0.5,
-    '总高上限：总高被压到 30mm',
+    Math.abs((stats?.heightMm ?? 0) - 12) < 0.05,
+    '总高上限：成品总高被压到 12mm',
     `heightMm=${stats?.heightMm?.toFixed(2)}`,
   );
   check(
-    Math.abs((stats?.faceSizeMm ?? 0) - 13.9) < 0.5,
-    '总高上限：足迹随之缩到 ≈13.9mm（圆柱）',
+    Math.abs((stats?.handleHeightMm ?? 0) - (12 - PLATE_T)) < 0.05,
+    '总高上限：压的是把手（片 4 + 把手 8）',
+    `handleHeightMm=${stats?.handleHeightMm?.toFixed(2)}`,
+  );
+  check(
+    Math.abs((stats?.faceSizeMm ?? 0) - SIZE_MM) < 0.05,
+    '总高上限：刻印片不被压小',
     `faceSizeMm=${stats?.faceSizeMm?.toFixed(2)}`,
   );
-  const note = (mesh.violations ?? []).find((v) => v.rule === 'size.range' && v.message.includes('总高上限'));
+  const note = (capped.violations ?? []).find(
+    (v) => v.rule === 'size.range' && v.message.includes('把手被总高上限'),
+  );
+  check(note?.severity === 'info', '总高上限：给出「把手被压」的提示', note?.message.slice(0, 60) ?? '无提示');
+
+  // 预算不足（上限 5mm → 只剩 1mm < 3mm）：不出把手，只出 4mm 片
+  const tiny = await buildSeal(sealSpecFor('square', 'classic', { maxHeightMm: 5 }), textLikePolygons());
+  const tinyStats = lastBuildStats();
+  check(tinyStats?.handleStyleId === null, '预算不足：不出把手（不压成薄饼）', String(tinyStats?.handleStyleId));
   check(
-    note !== undefined && note.severity === 'info',
-    '总高上限：给出提示（不默默缩小）',
-    note?.message.slice(0, 70) ?? '无提示',
+    Math.abs((tinyStats?.heightMm ?? 0) - PLATE_T) < 0.05,
+    '预算不足：只剩 4mm 刻印片',
+    `heightMm=${tinyStats?.heightMm?.toFixed(2)}`,
+  );
+  const tinyNote = (tiny.violations ?? []).find(
+    (v) => v.rule === 'size.range' && v.message.includes('放不下'),
+  );
+  check(
+    tinyNote?.severity === 'info' && (tinyNote.message ?? '').includes('4.0mm 刻印片'),
+    '预算不足：明说「已只出刻印片」',
+    tinyNote?.message.slice(0, 70) ?? '无提示',
+  );
+
+  // 阳刻抬高也要从预算里扣：上限 10mm、深度 1.2 → 抬高 1.2 + 片 4，把手只剩 4.8mm
+  const raisedCapped = await buildSeal(
+    { ...sealSpecFor('square', 'classic', { maxHeightMm: 10 }), relief: { mode: 'raised' as const, depthMm: 1.2 } },
+    textLikePolygons(),
+  );
+  const rcStats = lastBuildStats();
+  check(
+    Math.abs((rcStats?.heightMm ?? 0) - 10) < 0.05,
+    '总高上限（阳刻）：抬高 1.2mm 也从预算里扣掉，总高仍是 10mm',
+    `heightMm=${rcStats?.heightMm?.toFixed(2)}`,
+  );
+  check(
+    Math.abs((rcStats?.handleHeightMm ?? 0) - (10 - 1.2 - PLATE_T)) < 0.05,
+    '总高上限（阳刻）：把手 = 10 − 4 − 1.2',
+    `handleHeightMm=${rcStats?.handleHeightMm?.toFixed(2)}`,
   );
 }
 
-/* ---------- 12d. 章面上限 100mm ---------- */
+/* ---------- 12d. 章面上限 100mm + 跨厚比（阈值 24） ---------- */
 {
   const bigSpec = {
     ...engravedSpecMini,
-    body: { ...baseSpec.body, sizeMm: 100, cornerRadiusMm: 2, border: { style: 'none' as const, widthMm: 1.2, insetMm: 1.2 } },
+    body: {
+      ...baseSpec.body,
+      sizeMm: 100,
+      cornerRadiusMm: 2,
+      baseThicknessMm: 2.5, // 显式写：不依赖 spec 默认值（正在改成 4）
+      border: { style: 'none' as const, widthMm: 1.2, insetMm: 1.2 },
+    },
   };
   const big = await buildSeal(bigSpec, [{ outer: rect(-6, -2, 6, 2), holes: [] }]);
   check(big.status === 'NoError', '100mm 章面：能出 NoError 实体', `${big.triangleCount} 面 ${big.status}`);
   const thin = (big.violations ?? []).find((v) => v.rule === 'base.thickness');
   check(
     thin?.severity === 'warn' && (thin.measured ?? 0) > 25,
-    '100mm 章面 + 2.5mm 底板：有跨厚比提示',
+    '100mm 章面 + 2.5mm 片：跨厚比 40 → warn',
     `measured=${thin?.measured} ${thin?.message.slice(0, 50) ?? '无'}`,
   );
-  // 加厚底板后不该再提示
+
+  // 4mm 刻印片把边界推到 25：阈值取 24 之后必须照样报（否则最大合法尺寸是静默的）
+  const plate4 = await buildSeal(
+    { ...bigSpec, body: { ...bigSpec.body, baseThicknessMm: PLATE_T } },
+    [{ outer: rect(-6, -2, 6, 2), holes: [] }],
+  );
+  const four = (plate4.violations ?? []).find((v) => v.rule === 'base.thickness');
+  check(
+    four?.severity === 'warn' && Math.abs((four.measured ?? 0) - 25) < 0.1,
+    '100mm 章面 + 4mm 刻印片：跨厚比 25 > 24 → 仍然 warn',
+    `measured=${four?.measured}`,
+  );
+
+  // 加厚到 4.5mm 后不该再提示
   const thick = await buildSeal(
     { ...bigSpec, body: { ...bigSpec.body, baseThicknessMm: 4.5 } },
     [{ outer: rect(-6, -2, 6, 2), holes: [] }],
   );
   check(
     !(thick.violations ?? []).some((v) => v.rule === 'base.thickness'),
-    '100mm 章面 + 4.5mm 底板：跨厚比提示消失',
+    '100mm 章面 + 4.5mm 片：跨厚比提示消失',
     (thick.violations ?? []).map((v) => v.rule).join(',') || '无',
   );
 }
@@ -873,67 +1001,66 @@ for (const id of ['classic', 'cylinder', 'column', 'dome']) {
   const resinVerdict = (raisedResin.violations ?? []).filter((v) => v.rule === 'bridge.span');
   check(raisedResin.status === 'NoError' && resinVerdict.every((v) => v.severity !== 'error'), `${id}：阳刻+树脂不阻断`, resinVerdict.map((v) => v.severity).join(',') || '无');
 }
-/* ---------- 12h. 外部主体：边框宽度真进几何 + 阳刻总高预算 ---------- */
+/* ---------- 12h. 边框宽度真进几何 + 阳刻的把手预算 ---------- */
 {
-  const classic = BODY_STYLES.find((style) => style.id === 'classic')!;
-  // 用实测包围盒算比例，不用注册表里四舍五入过的 sourceBoxCm（2.03 vs 2.033）
-  const mother = await loadBody(classic.id);
-  const motherBox = mother.boundingBox();
-  const motherFootCm = Math.max(motherBox.max[0] - motherBox.min[0], motherBox.max[1] - motherBox.min[1]);
-  const motherHeightCm = motherBox.max[2] - motherBox.min[2];
-  const motherHeightMm = motherHeightCm * (SIZE_MM / motherFootCm);
-
   // 边框宽度必须真的改变几何：0.8 与 1.6 刻掉的材料差一个环面积。
   // 只比面数不可靠（同一圈环换宽度拓扑可能不变），所以比体积。
-  const atWidth = async (widthMm: number) => {
-    const base = libSpec('classic', 'engraved', 'thin');
-    const spec = { ...base, body: { ...base.body, border: { style: 'thin' as const, widthMm, insetMm: 1.2 } } };
-    return await buildSeal(spec, [libRect]);
-  };
-  const w08 = await atWidth(0.8);
-  const w16 = await atWidth(1.6);
-  const v08 = meshVolume(w08);
-  const v16 = meshVolume(w16);
+  const atWidth = async (widthMm: number) =>
+    await buildSeal(
+      sealSpecFor('square', 'classic', { border: { style: 'thin' as const, widthMm, insetMm: 1.2 } }),
+      textLikePolygons(),
+    );
+  const v08 = meshVolume(await atWidth(0.8));
+  const v16 = meshVolume(await atWidth(1.6));
   check(
     v08 - v16 > 30,
-    '外部主体 · 边框宽度 0.8 vs 1.6 确实变了（体积差一个环）',
+    '刻印片 · 边框宽度 0.8 vs 1.6 确实变了（体积差一个环）',
     `0.8: ${v08.toFixed(0)} / 1.6: ${v16.toFixed(0)} mm³（差 ${(v08 - v16).toFixed(0)}）`,
   );
 
-  // 阳刻：总高 = depth + 源比例高度（抬高那段必须真的在实体里）
-  const raised = await buildSeal(libSpec('classic', 'raised', 'none'), [libRect]);
+  // 阳刻 + 把手：字母贴床、把手坐在抬高后的片背面
+  const raised = await buildSeal(
+    {
+      ...sealSpecFor('square', 'classic', { border: { style: 'none', widthMm: 1.2, insetMm: 1.2 } }),
+      relief: { mode: 'raised' as const, depthMm: 1.2 },
+    },
+    textLikePolygons(),
+  );
   const rz = meshZ(raised);
+  const rStats = lastBuildStats();
+  check(rz.lo === 0, '阳刻 + 把手：zMin = 0（字母贴床）', JSON.stringify(rz));
   check(
-    Math.abs(rz.hi - (1.2 + motherHeightMm)) < 0.05,
-    '外部主体 · 阳刻：总高 = depth + 源比例高度',
-    `${rz.hi.toFixed(2)} vs ${(1.2 + motherHeightMm).toFixed(2)}`,
+    Math.abs(rz.hi - (1.2 + PLATE_T + (rStats?.handleHeightMm ?? 0))) < 0.05,
+    '阳刻 + 把手：总高 = 抬高 + 片厚 + 把手高',
+    `${rz.hi.toFixed(2)} vs ${(1.2 + PLATE_T + (rStats?.handleHeightMm ?? 0)).toFixed(2)}`,
   );
 
-  // 总高预算必须扣掉阳刻抬高：上限 30 → 母体只有 28.8 可长
-  const cappedBase = libSpec('classic', 'raised', 'none');
+  // 阳刻抬高也要从总高预算里扣：上限 12 → 把手只有 12 − 4 − 1.2 = 6.8mm
   const capped = await buildSeal(
-    { ...cappedBase, body: { ...cappedBase.body, maxHeightMm: 30 } },
-    [libRect],
+    {
+      ...sealSpecFor('square', 'classic', { maxHeightMm: 12, border: { style: 'none', widthMm: 1.2, insetMm: 1.2 } }),
+      relief: { mode: 'raised' as const, depthMm: 1.2 },
+    },
+    textLikePolygons(),
   );
-  const cappedStats = lastBuildStats();
+  const cStats = lastBuildStats();
   check(
-    Math.abs((cappedStats?.heightMm ?? 0) - 30) < 0.05,
-    '外部主体 · 阳刻 + 总高上限：抬高那段也计入预算（总高正好 30）',
-    `heightMm=${cappedStats?.heightMm?.toFixed(2)}`,
-  );
-  const expectedFaceMm = ((30 - 1.2) / motherHeightCm) * motherFootCm;
-  check(
-    Math.abs((cappedStats?.faceSizeMm ?? 0) - expectedFaceMm) < 0.2,
-    '外部主体 · 阳刻 + 总高上限：足迹按 (上限 − 抬高) 反推',
-    `faceSizeMm=${cappedStats?.faceSizeMm?.toFixed(2)} vs ${expectedFaceMm.toFixed(2)}`,
-  );
-  const cappedNote = (capped.violations ?? []).find(
-    (v) => v.rule === 'size.range' && v.message.includes('总高上限'),
+    Math.abs((cStats?.heightMm ?? 0) - 12) < 0.05,
+    '阳刻 + 总高上限 12：成品总高正好 12mm',
+    `heightMm=${cStats?.heightMm?.toFixed(2)}`,
   );
   check(
-    cappedNote?.message.includes('阳刻抬高') === true,
-    '外部主体 · 阳刻 + 总高上限：文案说清「其中 1.2mm 是阳刻抬高」',
-    cappedNote?.message.slice(0, 80) ?? '无 size.range 提示',
+    Math.abs((cStats?.handleHeightMm ?? 0) - (12 - 1.2 - PLATE_T)) < 0.05,
+    '阳刻 + 总高上限：把手 = 12 − 4 − 1.2',
+    `handleHeightMm=${cStats?.handleHeightMm?.toFixed(2)}`,
+  );
+  const cNote = (capped.violations ?? []).find(
+    (v) => v.rule === 'size.range' && v.message.includes('把手被总高上限'),
+  );
+  check(
+    cNote?.message.includes('阳刻抬高') === true,
+    '阳刻 + 总高上限：文案说清「阳刻抬高」也占了预算',
+    cNote?.message.slice(0, 90) ?? '无提示',
   );
 }
 

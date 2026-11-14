@@ -6,30 +6,39 @@
  *   - 单位 mm，原点在章面中心
  *   - 最后一步镜像 X（印章盖出来才是正的），镜像后保持外环 CCW
  *
+ * ## 结构：刻印片（始终存在）+ 可选把手
+ *
+ *   刻印片 = `body.shape`（圆/方）× `sizeMm`，厚 `baseThicknessMm`。图案刻在它上面。
+ *   把手   = `body.styleId` 指向的 STL 模型，缩放到「足迹 ≤ 0.6× 刻印片」后
+ *            贴在片的**背面**并集（沉 0.02mm 嵌入，保证体积相交而不是只共面）。
+ *
  * ## z 约定：盖印面贴床（写死，不要改）
  *
  * z=0 是**盖印面**，也就是贴打印床的那一面；z 轴向上长。
  * 理由：印章卖的就是章面的表面质量，贴床那一面最平整；阳刻的凸起朝上，不需要支撑。
  *
- *   阳刻 raised:  图案 z ∈ [0, depth]                          凸起直接立在床上
- *                 底板 z ∈ [depth, depth + baseThickness]
- *   阴刻 engraved: 底板 z ∈ [0, baseThickness]                 章面就是底板面
- *                 槽   z ∈ [0, depth]（从 z=0 往上挖，槽底在 z=depth）
+ *   阳刻 raised:  图案   z ∈ [0, depth]                        凸起直接立在床上
+ *                 刻印片 z ∈ [depth, depth + baseThickness]
+ *                 把手   z ∈ [depth + baseThickness − 0.02, …]
+ *   阴刻 engraved: 刻印片 z ∈ [0, baseThickness]               章面就是片的面
+ *                 槽     z ∈ [0, depth]（从 z=0 往上挖，槽底在 z=depth）
+ *                 把手   z ∈ [baseThickness − 0.02, …]
  *
- * 手柄已从产品删除（主体改版为 4 个内置模型 + 测试片）：`handleSolid` 仍导出，
- * 但不再被任何生成路径调用，`body.handle` 只为旧分享链接留字段。
+ * `body.handle`（none/knob/bridge）是上一代产品的字段，已不参与生成；
+ * `handleSolid` 仍导出但没有任何调用点。
  *
  * 由此推出的不变量（scripts/verify.ts 按这些断言，不写死毫米数）：
- *   - 阳刻 zMax = depth + baseThickness，zMin = 0
- *   - 阴刻 zMax = baseThickness，zMin = 0，且存在 z = depth 的槽底平面
+ *   - 阳刻 zMin = 0，刻印片占 [depth, depth + baseThickness]
+ *   - 阴刻 zMax = baseThickness（无把手时），且存在 z = depth 的槽底平面
+ *   - 有把手时总高 = 片厚 + 把手高（阳刻再加 depth）
  *
- * 不做整体 Z 翻转：那会把章体翻到下面。要"背面贴床"只有显式的
- * `orientation: 'face-up'` 分支（刚体旋转 180°），而且只对阳刻有意义。
+ * 不做整体 Z 翻转：那会把把手翻到下面。要"背面贴床"只有显式的
+ * `orientation: 'face-up'` 分支（刚体旋转 180°），且只对「无把手 + 阳刻」成立。
  */
 
-import type { BodyConfig, BodyKind, PrintConfig, ReliefConfig } from '../core/spec.ts';
+import type { BodyConfig, PrintConfig, ReliefConfig } from '../core/spec.ts';
 import type { LayerFit } from '../core/layout-bridge.ts';
-import { getBodyStyle, isBodyStyleId, loadBody } from './body-library.ts';
+import { isBodyStyleId, loadBody } from './body-library.ts';
 import type { BodyStyleId } from './body-library.ts';
 import { fromCrossSection, getManifold, prepareSectionWithReport } from './crosssection.ts';
 import type { ManifoldKit, PrepareReport } from './crosssection.ts';
@@ -40,7 +49,7 @@ import { SealGeometryError } from './types.ts';
 type CS = InstanceType<ManifoldKit['CrossSection']>;
 type Solid = InstanceType<ManifoldKit['Manifold']>;
 
-/** 打印取向：face-down = 盖印面贴床（默认）；face-up = 背面贴床、字母朝上（必须无手柄）。 */
+/** 打印取向：face-down = 盖印面贴床（默认）；face-up = 背面贴床、字母朝上（必须无把手）。 */
 export type SealOrientation = 'face-down' | 'face-up';
 
 /** buildSeal 需要的 spec 子集。 */
@@ -73,13 +82,22 @@ export interface BuildStats {
   orientation: SealOrientation;
   /** 图案来源多边形数量。 */
   polygonCount: number;
-  /** 章面形状：外部主体由模型决定，程序章体取 body.shape（polygon 按方形边界处理）。 */
+  /** 章面形状：由刻印片决定（body.shape；polygon 按方形边界处理）。 */
   faceShape: 'square' | 'circle' | 'polygon';
-  /** 实际章面足迹 mm（缩放之后；外部主体可能被总高上限压小）。 */
+  /** 实际章面足迹 mm：就是刻印片的 sizeMm（总高上限不再压章面，只压把手）。 */
   faceSizeMm: number;
-  /** 实际总高 mm（含手柄/柱身）。 */
+  /** 实际总高 mm（刻印片 + 把手；阳刻含抬高）。 */
   heightMm: number;
-  /** 总高上限生效时，按足迹本可以做到多大（mm）；没被限制就是 null。 */
+  /** 把手样式；null = 无把手（只有刻印片）。 */
+  handleStyleId: BodyStyleId | null;
+  /** 把手缩放后的底面足迹 mm（0 = 无把手）。 */
+  handleFaceMm: number;
+  /** 把手缩放后的高度 mm，不含刻印片（0 = 无把手）。 */
+  handleHeightMm: number;
+  /**
+   * 旧口径遗留：过去章面会被总高上限压小，记「不限高能到多大」。
+   * 现在总高上限只压把手、不压章面，这个值恒为 null；字段留着是为了 UI 旧代码不炸。
+   */
   faceSizeWithoutHeightLimitMm: number | null;
 }
 
@@ -132,7 +150,7 @@ function segmentsForCircle(radiusMm: number): number {
 }
 
 /* ------------------------------------------------------------------ */
-/* 手柄（已从产品删除，见 handleSolid）                                  */
+/* 旧版手柄（已无调用点，见 handleSolid）                                */
 /* ------------------------------------------------------------------ */
 
 /* ------------------------------------------------------------------ */
@@ -213,11 +231,11 @@ export async function borderPolygons(body: BodyConfig): Promise<Polygon2D[]> {
 }
 
 /**
- * 手柄：用截面绕 Z 轴旋转（revolve）生成，坐在背面 `bottomZ` 上。
+ * 旧版手柄：用截面绕 Z 轴旋转（revolve）生成，坐在背面 `bottomZ` 上。
  *
- * ⚠️ 产品已删除手柄（主体改版为 4 个内置模型 + 测试片）：**没有任何生成路径
- * 再调用它**。保留导出只为旧代码/脚本引用，别在 buildSeal 里重新接上——
- * 默认 spec 里 handle 仍是 'knob'，接上就会让每块测试片悄悄长旋钮。
+ * ⚠️ 新一代的「把手」是 `body.styleId` 指向的 STL 模型（见 buildSeal 第 3 步），
+ * 和这个函数无关。`body.handle` 只为旧分享链接留字段，**没有任何生成路径再调用它**；
+ * 保留导出只为旧代码/脚本引用，别在 buildSeal 里重新接上。
  *
  * 轮廓坐标 (x=半径, y=高度)，x>=0；manifold 会绕 Y 轴旋转后把 Y 摆成 Z 轴，
  * 所以这里直接在 (半径, 高度) 平面里画侧影线。
@@ -261,35 +279,37 @@ export function handleSolid(kit: ManifoldKit, body: BodyConfig, bottomZ: number)
 /* ------------------------------------------------------------------ */
 
 /**
- * 造一枚完整印章。
+ * 造一枚完整印章：**刻印片（始终存在）+ 可选把手**。
  *
- * 按 `body.styleId` 分派：
- *   - 4 个内置模型（classic / cylinder / column / dome）→ 模型库路径
- *   - `plate`（测试片）→ 参数化平板：方形 / 圆形 / 正多边形，厚度默认 3mm
- *   - **没有 styleId**：旧 spec 兼容，按测试片处理。新建 spec 一定带 styleId
- *     （默认 classic），所以这条分支只在旧数据和测试里出现。
+ *   - 刻印片：`body.shape`（圆/方/正多边形）× `sizeMm`，厚 `baseThicknessMm`（默认 4mm）。
+ *     图案刻在这片上，阴刻/阳刻照旧。
+ *   - 把手：`body.styleId` 指向 4 个内置模型之一时，缩放后贴在刻印片**背面**并集。
+ *     `'none'` / `'plate'` / 缺省 → 无把手，整个印章就是一片刻印片。
+ *
+ * 旧的「把 STL 模型当整章」那条路已删除：产品里印章 = 刻印片 + 把手，刻印片必须在。
  *
  * @param spec body / relief / print
  * @param polygons 二维图案（文字与图像已合并），外环 CCW、内孔 CW、单位 mm
  */
 export async function buildSeal(spec: SealBuildSpec, polygons: readonly Polygon2D[]): Promise<SolidMesh> {
   const kit = await getManifold();
-  const styleId = readAnyBodyStyle(spec.body);
-  if (styleId !== null && styleId !== 'plate') {
-    return buildSealWithLibraryBody(kit, spec, polygons, styleId);
-  }
   return buildSealWithPlate(kit, spec, polygons);
 }
 
-/** `plate`（参数化测试片）+ 4 个内置模型，统称主体样式。 */
-function readAnyBodyStyle(body: BodyConfig): BodyKind | null {
-  // 直接按结构化类型读，避免和 spec.ts 里将来收窄的 styleId 类型打架
+/**
+ * 把 `body.styleId` 读成把手 id（null = 无把手）。
+ *
+ * spec 侧正在把 `BodyKind` 从 `BodyStyleId | 'plate'` 改成 `BodyStyleId | 'none'`，
+ * 这里两种旧值都认：`'none'` / `'plate'` / 缺省 都是「没有把手」。
+ * 按结构化类型读，避免和 spec.ts 的收窄同步打架。
+ */
+function readHandleStyle(body: BodyConfig): BodyStyleId | null {
   const raw = (body as { readonly styleId?: unknown }).styleId;
-  if (raw === 'plate') return 'plate';
+  if (raw === 'none' || raw === 'plate' || raw === undefined || raw === null) return null;
   return isBodyStyleId(raw) ? raw : null;
 }
 
-/** 测试片参数：形状 / 边数 / 厚度。字段还没进 spec 时按结构化类型读并给默认值。 */
+/** 刻印片参数：形状 / 边数 / 厚度。字段还没进 spec 时按结构化类型读并给默认值。 */
 export interface PlateParams {
   shape: 'square' | 'circle' | 'polygon';
   sides: number;
@@ -313,12 +333,29 @@ function readPlateParams(body: BodyConfig): PlateParams {
 }
 
 /**
- * 测试片：一块厚 `thicknessMm` 的平板（方/圆/正多边形），没有手柄、没有边框。
+ * 把手底面足迹 ≤ 刻印片足迹的这个比例。
  *
- * z 约定与整枚印章一致（盖印面贴床，z=0）：
- *   阳刻：图案 z∈[0, depth]，平板 z∈[depth, depth+T]
- *   阴刻：平板 z∈[0, T]，槽从 z=0 往上挖 depth
- * 最后镜像 X。
+ * 为什么 0.6 站得住：把手包围盒对角线 ≤ 0.6D × √2 ≈ 0.85D < D，
+ * 所以**哪怕方把手配圆片**，把手任何一个角都不会伸到刻印片外，
+ * 不会出现「把手边缘悬空、没有材料接住」的唇边。换模型也不用重新调这个数。
+ */
+const HANDLE_FOOTPRINT_RATIO = 0.6;
+
+/** 总高预算扣完刻印片（和阳刻抬高）后，低于这个高度就不出把手——压成薄饼比没有更糟。 */
+const MIN_HANDLE_HEIGHT_MM = 3;
+
+/** 把手底面沉进刻印片背面的深度：保证两个实体真的体积相交，而不是只共面。 */
+const HANDLE_EMBED_MM = 0.02;
+
+/**
+ * 刻印片（+ 可选把手）：一块厚 `thicknessMm` 的平板（方/圆/正多边形），图案刻在它上面，
+ * 有把手时把手贴在它的背面。
+ *
+ * z 约定（盖印面贴床，z=0）：
+ *   阴刻：刻印片 z∈[0, T]，槽从 z=0 往上挖 depth，把手坐在 z=T−0.02 起
+ *   阳刻：图案 z∈[0, depth]，刻印片 z∈[depth, depth+T]，把手坐在 z=depth+T−0.02 起
+ *
+ * 最后镜像 X（把手跟着一起镜像；四个模型都对称，看不出差别）。
  */
 async function buildSealWithPlate(
   kit: ManifoldKit,
@@ -336,9 +373,9 @@ async function buildSealWithPlate(
 
   if (raised && depth > thickness - 0.2) {
     throw new SealGeometryError(
-      '测试片',
+      '刻印片',
       'ReliefDeeperThanPlate',
-      `浮雕深 ${depth}mm 接近/超过测试片厚度 ${thickness}mm：阳刻会直接穿底。把深度降到 ${Math.max(0.2, thickness - 0.4).toFixed(1)}mm 以下，或加厚测试片。`,
+      `浮雕深 ${depth}mm 接近/超过刻印片厚度 ${thickness}mm：阳刻会直接穿底。把深度降到 ${Math.max(0.2, thickness - 0.4).toFixed(1)}mm 以下，或加厚刻印片。`,
     );
   }
 
@@ -354,12 +391,11 @@ async function buildSealWithPlate(
   faceSection.delete();
   const plate = plateExtruded.translate([0, 0, plateBottom]);
   plateExtruded.delete();
-  ensureStatus(plate, '测试片挤出');
+  ensureStatus(plate, '刻印片挤出');
   let solid: Solid = plate;
 
-  // 注意：这里**不再**接手柄。主体改版后只有 4 个内置模型 + 测试片，UI 已删掉手柄
-  // 选择器，但默认 spec 里仍是 handle: 'knob'——在这里接上会让每块测试片都悄悄长
-  // 出一根 16mm 旋钮，「3mm 测试片」直接不成立。`body.handle` 只为旧链接留字段。
+  // 手柄（`body.handle`）是上一代产品的字段，已不参与生成；现在只有 `body.styleId`
+  // 指向的 STL 把手会接在这片背面（见下面第 3 步）。
 
   // 2) 图案：二维阶段先闭运算（保间隙）+ 测量外扩（保笔画），再一次性挤出
   let prepared: CS | null = null;
@@ -414,6 +450,58 @@ async function buildSealWithPlate(
     }
   }
 
+  // 3) 把手：贴在刻印片**背面**并集。
+  //
+  // 缩放取小（都按 mm）：
+  //   ① 足迹 ≤ 0.6 × 刻印片足迹（对角线论证见 HANDLE_FOOTPRINT_RATIO）
+  //   ② 总高 ≤ maxHeightMm —— 预算 = 上限 − 刻印片 − 阳刻抬高。
+  //      上限约束的是**成品实际高度**，不是把手本身的高度，所以阳刻抬高必须扣掉。
+  const handleStyle = readHandleStyle(body);
+  let handleStats: { styleId: BodyStyleId; faceMm: number; heightMm: number; limitedByHeight: boolean } | null = null;
+  let handleBudgetMm: number | null = null; // 非 null 且 < MIN_HANDLE_HEIGHT_MM → 没出把手
+  if (handleStyle !== null) {
+    const maxHeightMm = readMaxHeightMm(body);
+    const budgetMm = maxHeightMm === null ? Number.POSITIVE_INFINITY : maxHeightMm - plateTop;
+    if (budgetMm < MIN_HANDLE_HEIGHT_MM) {
+      handleBudgetMm = budgetMm;
+    } else {
+      // 共享缓存实例，不能 delete；只用它派生新实体
+      const handleSource = await loadBody(handleStyle);
+      const handleBox = handleSource.boundingBox();
+      const footCm = Math.max(handleBox.max[0] - handleBox.min[0], handleBox.max[1] - handleBox.min[1]);
+      const heightCm = Math.max(1e-6, handleBox.max[2] - handleBox.min[2]);
+      if (!(footCm > 0)) {
+        throw new SealGeometryError('把手', 'EmptyBody', `${handleStyle} 的底面足迹为 0，无法缩放。`);
+      }
+      const scaleByFootprint = (body.sizeMm * HANDLE_FOOTPRINT_RATIO) / footCm;
+      const scaleByHeight = maxHeightMm === null ? Number.POSITIVE_INFINITY : budgetMm / heightCm;
+      const handleScale = Math.min(scaleByFootprint, scaleByHeight);
+
+      const scaled = handleSource.scale([handleScale, handleScale, handleScale]);
+      const scaledBox = scaled.boundingBox();
+      // 居中 + 底面沉 HANDLE_EMBED_MM 进片背面：不是「怕共面报错」，是保证体积真相交
+      // （模型底面只保证足迹、不保证平面度，精确共面遇到 0.01 翘曲会留缝）
+      const moved = scaled.translate([
+        -(scaledBox.min[0] + scaledBox.max[0]) / 2,
+        -(scaledBox.min[1] + scaledBox.max[1]) / 2,
+        plateTop - HANDLE_EMBED_MM - scaledBox.min[2],
+      ]);
+      scaled.delete();
+      const merged = solid.add(moved);
+      solid.delete();
+      moved.delete();
+      ensureStatus(merged, '把手并集');
+      solid = merged;
+
+      handleStats = {
+        styleId: handleStyle,
+        faceMm: footCm * handleScale,
+        heightMm: scaledBox.max[2] - scaledBox.min[2],
+        limitedByHeight: scaleByHeight < scaleByFootprint - 1e-9,
+      };
+    }
+  }
+
   // 4) 镜像 X：印章必须镜像，盖出来才是正的
   const mirrored = solid.mirror([1, 0, 0]);
   solid.delete();
@@ -421,14 +509,18 @@ async function buildSealWithPlate(
 
   // 4.5) 打印取向。
   //
-  // ⚠️ 产品决策：打印方向固定「刻印面贴床」（face-down），UI 的选择器要删。
-  //    这里的 face-up 分支现在**只为「平装阳刻」预设保留**（阳刻贴床时底板整片
-  //    悬空、拆不掉支撑，必须翻面打）。等用户答复「阳刻要不要保留」后：
-  //      - 保留阳刻 → 这个分支由该预设内部自动选择，不再暴露成用户选项；
-  //      - 删掉阳刻 → 连同这个分支一起删。
-  //    在那之前不要重构它，也不要让别的入口传 face-up。
+  // ⚠️ 产品决策：打印方向固定「刻印面贴床」（face-down），UI 没有选择器。
+  //    这里的 face-up 分支只服务「平装阳刻」预设（阳刻贴床时刻印片整片悬空、
+  //    拆不掉支撑，必须翻面打），而且**必须无把手**——翻面后把手全在床面以下。
   const orientation: SealOrientation = spec.orientation ?? 'face-down';
   if (orientation === 'face-up') {
+    if (handleStyle !== null) {
+      throw new SealGeometryError(
+        '打印取向',
+        'FaceUpRequiresNoHandle',
+        '面朝上打印必须不带把手：翻面后把手会整个落到床面以下。请把把手设为「无」，或改用「刻印面贴床」。',
+      );
+    }
     if (raised) {
       const flipped = solid.rotate([180, 0, 0]).translate([0, 0, plateTop]);
       solid.delete();
@@ -444,17 +536,59 @@ async function buildSealWithPlate(
     }
   }
 
-  return finishSeal({
+  const mesh = await finishSeal({
     kit,
     spec,
     solid,
     polygons,
     prepared,
     prepareReport,
-    bodyShape: `plate:${params.shape}`,
+    bodyShape: handleStats === null ? `plate:${params.shape}` : `plate:${params.shape}+${handleStats.styleId}`,
     orientation,
-    printBody: { ...body, shape: params.shape, sizeMm: body.sizeMm },
+    // 图案刻在这片平板上的：形状/尺寸都由片决定（把手不影响章面）
+    printBody: { ...body, shape: params.shape, sizeMm: body.sizeMm, handle: 'none' },
+    handle: handleStats,
   });
+
+  // 把手的两条提示：被总高上限压过 / 预算不够干脆没出。都要明说，
+  // 不能默默把把手缩成薄饼，更不能默默让它消失。
+  if (handleStats !== null && handleStats.limitedByHeight) {
+    const maxHeightMm = readMaxHeightMm(body) ?? 0;
+    const budgetMm = maxHeightMm - plateTop;
+    mesh.violations = [
+      ...(mesh.violations ?? []),
+      {
+        rule: 'size.range',
+        severity: 'info',
+        measured: Math.round(handleStats.heightMm * 10) / 10,
+        limit: Math.round(budgetMm * 10) / 10,
+        message:
+          `把手被总高上限压到 ${handleStats.heightMm.toFixed(1)}mm 高、${handleStats.faceMm.toFixed(1)}mm 宽` +
+          `（上限 ${maxHeightMm}mm − 刻印片 ${thickness.toFixed(1)}mm` +
+          `${raised ? ` − 阳刻抬高 ${depth.toFixed(1)}mm` : ''} = ${budgetMm.toFixed(1)}mm）：` +
+          `想要更粗的把手就调高总高上限。`,
+        fix: 'fix:fitPattern',
+      },
+    ];
+  }
+  if (handleBudgetMm !== null) {
+    const maxHeightMm = readMaxHeightMm(body) ?? 0;
+    mesh.violations = [
+      ...(mesh.violations ?? []),
+      {
+        rule: 'size.range',
+        severity: 'info',
+        measured: Math.max(0, Math.round(handleBudgetMm * 10) / 10),
+        limit: MIN_HANDLE_HEIGHT_MM,
+        message:
+          `总高上限 ${maxHeightMm}mm 扣掉刻印片 ${thickness.toFixed(1)}mm` +
+          `${raised ? `和阳刻抬高 ${depth.toFixed(1)}mm` : ''} 后只剩 ${Math.max(0, handleBudgetMm).toFixed(1)}mm，` +
+          `放不下 ≥${MIN_HANDLE_HEIGHT_MM}mm 的把手：已只出 ${thickness.toFixed(1)}mm 刻印片。调高总高上限就会接上把手。`,
+        fix: 'fix:fitPattern',
+      },
+    ];
+  }
+  return mesh;
 }
 
 /**
@@ -474,12 +608,14 @@ async function finishSeal(args: {
   orientation: SealOrientation;
   /**
    * 传给可打印性校验的「有效章体」：章面形状与实际尺寸。
-   * 外部主体要用模型自己的形状（圆/方）和缩放后的真实足迹，
-   * 否则 `checkPatternBounds` / `checkSize` 会按方形和用户设的名义尺寸判。
+   * 现在图案就刻在刻印片上，所以形状/尺寸都取自片（`body.shape` × `sizeMm`），
+   * 把手不影响章面。
    */
   printBody: BodyConfig;
-  /** 总高上限压过足迹时，记录「不限高能到多大」；未受限为 null。 */
+  /** 旧口径遗留：章面不再被总高上限压小，这个值恒为 null。 */
   faceSizeWithoutHeightLimitMm?: number | null;
+  /** 本枚印章接的把手（无把手时为 null/缺省）。 */
+  handle?: { styleId: BodyStyleId; faceMm: number; heightMm: number } | null;
 }): Promise<SolidMesh> {
   const { kit, spec, polygons, solid } = args;
   const relief = spec.relief;
@@ -488,7 +624,7 @@ async function finishSeal(args: {
   const mesh = toSolidMesh(kit, solid, '最终实体');
   const status = mesh.status;
 
-  // 实际总高：直接从网格量，两条路径都准（含手柄/柱身）
+  // 实际总高：直接从网格量（片 + 把手 + 阳刻抬高都在里面）
   let heightMin = Infinity;
   let heightMax = -Infinity;
   for (let i = 0; i < mesh.vertProperties.length; i += mesh.numProp) {
@@ -507,12 +643,15 @@ async function finishSeal(args: {
     faceShape: args.printBody.shape,
     faceSizeMm: args.printBody.sizeMm,
     heightMm: Number.isFinite(heightMax) ? Math.round((heightMax - heightMin) * 100) / 100 : 0,
+    handleStyleId: args.handle?.styleId ?? null,
+    handleFaceMm: Math.round((args.handle?.faceMm ?? 0) * 100) / 100,
+    handleHeightMm: Math.round((args.handle?.heightMm ?? 0) * 100) / 100,
     faceSizeWithoutHeightLimitMm: args.faceSizeWithoutHeightLimitMm ?? null,
   };
 
   // 5) 可打印性校验：2D 看笔画/间隙/孤岛/深宽比，3D 看悬空/底面/尺寸。
   //    不阻断导出，只把结果挂在 mesh 上让 UI 高亮。
-  //    注意用 printBody（有效章体）：外部主体的形状/实际足迹与 body 不同。
+  //    注意用 printBody（有效章体）：图案刻在片上，形状/尺寸取自片而不是把手。
   try {
     mesh.violations = checkPrintability({
       section: prepared,
@@ -555,193 +694,6 @@ async function finishSeal(args: {
   }
   if (mesh.triangleCount === 0) {
     throw new SealGeometryError('最终实体', status, '几何生成结果为空（可能图案完全落在章面之外）。');
-  }
-  return mesh;
-}
-
-/* ------------------------------------------------------------------ */
-/* 外部主体                                                            */
-/* ------------------------------------------------------------------ */
-
-/**
- * 外部主体路径：模型库里的章体 + 边框 + 阴刻/阳刻图案。
- *
- *   - 缩放：底面足迹缩到 `body.sizeMm`（源单位是 cm），居中到原点、底面 z=0
- *   - 边框：从**实体本身**在 z=0.05 切一片当基准（模型底部不是配置里的方圆），
- *     再按 border 参数取环；在 `prepareSection` 之后合并，和测试片路径同一条规则
- *   - 阴刻：图案 + 边框挤出成柱体，从 z=-0.02 切到 depth，与母体求差
- *   - 阳刻：图案 + 边框从 z=-depth 挤到 +0.02 与母体并集，再整体上移 depth——
- *     字母贴床、母体落到 depth 之上。抬高这段算进总高预算（见 scaleByHeight）
- *   - 手柄：模型自带形制，`body.handle` 在这里不生效
- *   - 打印取向：强制盖印面贴床（模型是实心的，翻面只会把它倒过来）
- *   - 最后照旧镜像 X
- */
-async function buildSealWithLibraryBody(
-  kit: ManifoldKit,
-  spec: SealBuildSpec,
-  polygons: readonly Polygon2D[],
-  styleId: BodyStyleId,
-): Promise<SolidMesh> {
-  const body = spec.body;
-  const relief = spec.relief;
-  const print = spec.print;
-  const depth = Math.max(0.2, relief.depthMm);
-  const raised = relief.mode !== 'engraved';
-
-  // 共享缓存实例，不能 delete；下面只用它派生新实体
-  const source = await loadBody(styleId);
-  const style = getBodyStyle(styleId);
-  const sourceBox = source.boundingBox();
-  const footprintCm = Math.max(sourceBox.max[0] - sourceBox.min[0], sourceBox.max[1] - sourceBox.min[1]);
-  const sourceHeightCm = Math.max(1e-6, sourceBox.max[2] - sourceBox.min[2]);
-  if (!(footprintCm > 0)) {
-    throw new SealGeometryError('外部主体', 'EmptyBody', `${styleId} 的底面足迹为 0，无法缩放。`);
-  }
-
-  // 缩放取小：足迹 ≤ sizeMm，且总高 ≤ maxHeightMm（都按 mm 算）。
-  //
-  // ⚠️ 阳刻时母体要整体抬高 `depth`（图案从 z=0 长到母体底部），所以总高预算
-  //    **必须扣掉这段**：上限是硬约束，只管母体本身会让抬高后的总高冲破它。
-  //
-  // 源坐标单位是 cm，乘 k 之后坐标直接变成 mm（2.00cm 的底座 × 15 = 30mm）
-  const scaleByFootprint = body.sizeMm / footprintCm;
-  const maxHeightMm = readMaxHeightMm(body);
-  const heightBudgetMm = maxHeightMm === null ? Number.POSITIVE_INFINITY : maxHeightMm - (raised ? depth : 0);
-  const scaleByHeight =
-    maxHeightMm === null ? Number.POSITIVE_INFINITY : Math.max(1e-3, heightBudgetMm) / sourceHeightCm;
-  const scale = Math.min(scaleByFootprint, scaleByHeight);
-
-  const actualFaceMm = footprintCm * scale;
-  const heightLimited = scaleByHeight < scaleByFootprint - 1e-9;
-  // 按足迹缩会得到多高（只在被限高时用来解释原因；阳刻时含抬高那段）
-  const heightIfFootprintScaled = sourceHeightCm * scaleByFootprint + (raised ? depth : 0);
-
-  const scaled = source.scale([scale, scale, scale]);
-  const scaledBox = scaled.boundingBox();
-  const placed = scaled.translate([
-    -(scaledBox.min[0] + scaledBox.max[0]) / 2,
-    -(scaledBox.min[1] + scaledBox.max[1]) / 2,
-    -scaledBox.min[2],
-  ]);
-  scaled.delete();
-  ensureStatus(placed, '主体缩放');
-  let solid: Solid = placed;
-
-  // 图案 → 阴刻槽 / 阳刻凸台（和程序底板同一段逻辑）
-  let prepared: CS | null = null;
-  let prepareReport: PrepareReport | null = null;
-  if (polygons.length > 0) {
-    const prep = await prepareSectionWithReport(polygons, {
-      minStrokeMm: print?.minStrokeMm ?? 0.4,
-      minGapMm: print?.minGapMm ?? 0.4,
-      simplifyMm: 0.02,
-    });
-    prepared = prep.section;
-    prepareReport = prep.report;
-  }
-
-  // 边框：外部主体的章面形状不是配置里的方圆，必须从**实体本身**取轮廓，
-  // 在底面以上 0.05mm 处切一片当基准，再按 border 生成环（与程序底板同参数）。
-  let border: CS | null = null;
-  if (body.border.style !== 'none') {
-    const face = solid.slice(0.05);
-    if (!face.isEmpty()) border = borderSection(face, body.border);
-    face.delete();
-  }
-  if (border !== null && !border.isEmpty()) {
-    if (prepared === null || prepared.isEmpty()) {
-      prepared?.delete();
-      prepared = border;
-    } else {
-      const merged = prepared.add(border);
-      prepared.delete();
-      border.delete();
-      prepared = merged;
-    }
-    border = null;
-  } else {
-    border?.delete();
-    border = null;
-  }
-
-  const hasPattern = prepared !== null && !prepared.isEmpty();
-  if (hasPattern) {
-    const overlap = 0.02;
-    if (raised) {
-      // 凸台从 z=-depth 长到 +overlap，与母体底面搭接；之后整体上移 depth
-      const stamp = prepared!.extrude(depth + overlap).translate([0, 0, -depth]);
-      const next = solid.add(stamp);
-      solid.delete();
-      stamp.delete();
-      ensureStatus(next, '阳刻并集');
-      solid = next;
-    } else {
-      // 槽从 z=0 往上挖；刀体向下多出 overlap，避免与 z=0 共面
-      const cutter = prepared!.extrude(depth + overlap).translate([0, 0, -overlap]);
-      const next = solid.subtract(cutter);
-      solid.delete();
-      cutter.delete();
-      ensureStatus(next, '阴刻差集');
-      solid = next;
-    }
-  }
-
-  // 阳刻：整体抬回 z=0（字母/边框的盖印面贴床），底板落到 depth 之上
-  if (raised && hasPattern) {
-    const lifted = solid.translate([0, 0, depth]);
-    solid.delete();
-    solid = lifted;
-    ensureStatus(solid, '阳刻抬回床面');
-  }
-
-  // 镜像 X：印章必须镜像，盖出来才是正的
-  const mirrored = solid.mirror([1, 0, 0]);
-  solid.delete();
-  solid = mirrored;
-
-  // 有效章体：形状来自模型（圆/方），尺寸是缩放后的**实际**足迹。
-  // 不这么做的话 checkPatternBounds 会按方形判圆章（高估 41%），
-  // checkSize 会按用户设的名义尺寸判（把被限高的章体当超限/合规判错）。
-  const printBody: BodyConfig = {
-    ...body,
-    shape: style.faceShape,
-    sizeMm: actualFaceMm,
-    // 外部主体的手柄是模型自带的，`body.handle` 在这里不生效；置 none 是为了
-    // 不让旧分享链接里的 handle/handleDiameterMm 触发无关的「手柄直径太小」提示。
-    handle: 'none',
-  };
-
-  const mesh = await finishSeal({
-    kit,
-    spec,
-    solid,
-    polygons,
-    prepared,
-    prepareReport,
-    bodyShape: `library:${styleId}`,
-    // 外部主体是实心模型，face-up 翻面只会把它倒过来，所以固定贴床
-    orientation: 'face-down',
-    printBody,
-    faceSizeWithoutHeightLimitMm: heightLimited ? body.sizeMm : null,
-  });
-
-  // 总高上限生效时必须明说，不能默默把章面缩小
-  if (heightLimited) {
-    mesh.violations = [
-      ...(mesh.violations ?? []),
-      {
-        rule: 'size.range',
-        severity: 'info',
-        measured: Math.round(actualFaceMm * 100) / 100,
-        limit: body.sizeMm,
-        message:
-          `章面被总高上限压到 ${actualFaceMm.toFixed(1)}mm（你要 ${body.sizeMm}mm，总高上限 ${maxHeightMm}mm` +
-          `${raised ? `，其中 ${depth.toFixed(1)}mm 是阳刻抬高` : ''}）：` +
-          `${style.label} 源模型偏高瘦，按足迹缩会到 ${heightIfFootprintScaled.toFixed(1)}mm 高。` +
-          `想要更大的章面就调高总高上限，或换更扁的模型。`,
-        fix: 'fix:fitPattern',
-      },
-    ];
   }
   return mesh;
 }

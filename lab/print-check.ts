@@ -30,7 +30,15 @@ function makeSpec(text: string, sizeMm: number, mode: 'raised' | 'engraved', fon
   const base = createDefaultSpec();
   return {
     ...base,
-    body: { ...base.body, shape: 'square', sizeMm, cornerRadiusMm: 2 },
+    body: {
+      ...base.body,
+      shape: 'square',
+      sizeMm,
+      cornerRadiusMm: 2,
+      // 这个 lab 只验「图案 → 判据」，把手不参与任何一条：显式关掉，
+      // 免得每例都多算 4800 个三角面、还让 bridge.span 的面积跟着把手变。
+      styleId: 'plate',
+    },
     relief: { mode, depthMm: 1.2 },
     layers: [createTextLayer({ text, fontSizeMm, layout: 'horizontal' })],
     print: { ...base.print, process: 'fdm', minStrokeMm: 0.4, minGapMm: 0.3 },

@@ -11,6 +11,7 @@ import {
   type BodyShape,
   type BodyStyleId,
   type ImageLayer,
+  type HandleKind,
   type Layer,
   type SealSpec,
 } from './core/spec.ts';
@@ -30,6 +31,16 @@ import type { BuildResponse, ImagePayload } from './worker/geometry.worker.ts';
 import type { SolidMesh } from './geometry/types.ts';
 import type { Violation } from './geometry/printability.ts';
 import type { BuildStats } from './geometry/pipeline.ts';
+
+/** 把手候选：无把手 + 4 个内置模型。'plate' 不再出现在 UI，只作旧链接兼容 */
+const HANDLE_OPTIONS: ReadonlyArray<{ id: HandleKind; name: string; note: string }> = [
+  { id: 'none', name: '无把手', note: '只出 4mm 刻印片，不接把手' },
+  ...BODY_STYLES.filter((s) => s.id !== 'plate').map((s) => ({
+    id: s.id as HandleKind,
+    name: s.name,
+    note: s.note,
+  })),
+];
 
 export default function App() {
   const [spec, setSpec] = useState<SealSpec>(() => specFromHash() ?? createDefaultSpec());
@@ -246,11 +257,12 @@ export default function App() {
   /** 阻断级问题：不允许导出（例如阳刻+手柄的 809mm² 悬空面） */
   const blocking = violations.some((v) => v.severity === 'error');
   const imageLayers = spec.layers.filter((l): l is ImageLayer => l.kind === 'image');
-  /** 选了外部主体样式：形制由模型自带，只保留章面尺寸与阴刻 */
-  const libStyle = spec.body.styleId;
-  const libStyleDef = libStyle ? BODY_STYLES.find((s) => s.id === libStyle) : undefined;
-  /** 外部主体只按底面缩放，高度随模型比例走 */
-  const libHeightMm = libStyleDef ? Math.round(spec.body.sizeMm * libStyleDef.heightRatio * 10) / 10 : null;
+  /** 把手：'none' / 'plate' / 缺省都算无把手 */
+  const handleId: HandleKind = (() => {
+    const raw = spec.body.styleId;
+    return raw && raw !== 'plate' ? raw : 'none';
+  })();
+  const handleDef = handleId === 'none' ? undefined : BODY_STYLES.find((s) => s.id === handleId);
 
   /** 画布线框用的每层轮廓；没有轮廓的层（如图像）仍然占位，只是不画框 */
   const canvasLayers = spec.layers.map((l) => ({
@@ -503,25 +515,20 @@ export default function App() {
           <>
         <Field label="把手">
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-            {BODY_STYLES.map((st) => (
+            {HANDLE_OPTIONS.map((st) => (
               <button
                 key={st.id}
                 title={st.note}
                 onClick={() =>
                   patch((s) => {
                     s.body.styleId = st.id;
-                    // 4 个内置模型只有圆（常见样式/圆柱/石墩）和方（立方柱）；
-                    // 正多边形只能在测试片上做。选中模型时把章面形状同步成模型真实形状，
-                    // 版式侧和几何侧才用同一套口径。
-                    if (st.id !== 'plate') s.body.shape = st.id === 'column' ? 'square' : 'circle';
-                    if (st.id === 'plate' && s.body.baseThicknessMm > 4) s.body.baseThicknessMm = 3;
-                    s.relief.mode = 'engraved';
-                    s.print.orientation = 'face-down';
+                    // 有把手时阳刻贴床会整片悬空、翻面又会让把手穿床，所以选把手就回到阴刻
+                    if (st.id !== 'none') s.relief.mode = 'engraved';
                   })
                 }
-                style={bodyTileStyle(libStyle === st.id)}
+                style={bodyTileStyle(handleId === st.id)}
               >
-                {st.id === 'plate' ? (
+                {st.id === 'none' ? (
                   <span
                     style={{
                       display: 'block',
@@ -530,7 +537,7 @@ export default function App() {
                       lineHeight: '30px',
                       textAlign: 'center',
                       fontSize: 18,
-                      color: libStyle === st.id ? '#b3261e' : '#7a746b',
+                      color: handleId === st.id ? '#b3261e' : '#7a746b',
                     }}
                   >
                     ◻
@@ -541,7 +548,7 @@ export default function App() {
                       display: 'block',
                       width: 30,
                       height: 30,
-                      color: libStyle === st.id ? '#b3261e' : '#7a746b',
+                      color: handleId === st.id ? '#b3261e' : '#7a746b',
                     }}
                     // SVG 由 temp/gen-thumbs.mjs 生成，内容只有 path
                     dangerouslySetInnerHTML={{ __html: BODY_THUMBS[st.id as BodyStyleId] }}
@@ -551,23 +558,24 @@ export default function App() {
               </button>
             ))}
           </div>
+          <div style={{ fontSize: 10.5, color: '#a39c91', marginTop: 4, lineHeight: 1.4 }}>
+            刻印片固定 4mm 厚、形状由顶部圆章/方章决定；把手贴在刻印片背面。选「无把手」就只出刻印片。
+          </div>
         </Field>
 
-        {libStyle && (
+        {handleId !== 'none' && (
           <div style={{ ...warnStyle, borderColor: '#e6ded0', background: '#faf7f1' }}>
-            <div style={{ fontWeight: 600, marginBottom: 4 }}>
-              用内置主体：{libStyleDef?.name}
-            </div>
+            <div style={{ fontWeight: 600, marginBottom: 4 }}>把手：{handleDef?.name}</div>
             <div style={{ lineHeight: 1.5, opacity: 0.85 }}>
-              形制由模型自带，章型不可调；边框是叠加在章面上的环形槽（阳刻为凸筋），可以加。
-              章面尺寸决定整体等比缩放，平面朝下当刻印面。
+              刻印片 {spec.body.sizeMm}mm · 厚 {spec.body.baseThicknessMm}mm
+              {stats ? `，总高 ${stats.heightMm.toFixed(1)}mm` : ''}
+              {stats?.handleHeightMm
+                ? `（把手 ${stats.handleFaceMm?.toFixed(1)}mm 宽 / ${stats.handleHeightMm.toFixed(1)}mm 高）`
+                : ''}
             </div>
-            {libHeightMm !== null && (
-              <div style={{ lineHeight: 1.5, marginTop: 2, opacity: 0.85 }}>
-                {spec.body.sizeMm}mm 章面 → 总高约 <strong>{libHeightMm}mm</strong>
-                {libHeightMm > 50 ? '（原模型是瘦高型，想矮一点就调小章面）' : ''}
-              </div>
-            )}
+            <div style={{ lineHeight: 1.5, marginTop: 2, opacity: 0.7 }}>
+              把手宽度按刻印片的 0.6 倍缩放，任何形状都不会伸出片外。
+            </div>
           </div>
         )}
 
@@ -594,24 +602,16 @@ export default function App() {
           </div>
         </Field>
 
-        {(libStyle === 'cylinder' || libStyle === 'column') && (
-          <Field
-            label={`总高 ${
-              spec.body.maxHeightMm ??
-              Math.round(spec.body.sizeMm * (libStyleDef?.heightRatio ?? 1))
-            }mm`}
-          >
+        {handleId !== 'none' && (
+          <Field label={`总高上限 ${spec.body.maxHeightMm ?? Math.round(4 + (handleDef?.heightRatio ?? 1) * 18)}mm`}>
             <input
-              type="range" min={20} max={120} step={1}
-              value={
-                spec.body.maxHeightMm ??
-                Math.round(spec.body.sizeMm * (libStyleDef?.heightRatio ?? 1))
-              }
+              type="range" min={8} max={120} step={1}
+              value={spec.body.maxHeightMm ?? Math.round(4 + (handleDef?.heightRatio ?? 1) * 18)}
               onChange={(e) => patch((s) => { s.body.maxHeightMm = Number(e.target.value); })}
               style={{ width: '100%' }}
             />
             <div style={{ fontSize: 10.5, color: '#a39c91', lineHeight: 1.4, marginTop: 2 }}>
-              调矮会连带把章面缩下来（章面尺寸变成上限）。想恢复原比例点右边。
+              限的是成品总高（刻印片 4mm + 把手）。调矮只压把手，章面不变；扣掉片厚后不足 3mm 就不出把手。
             </div>
             <button
               onClick={() => patch((s) => { delete s.body.maxHeightMm; })}
@@ -691,8 +691,8 @@ export default function App() {
             onChange={(e) => patch((s) => { s.relief.mode = e.target.value as 'raised' | 'engraved'; })}
             style={inputStyle}
           >
-            <option value="raised" disabled={Boolean(libStyle) && libStyle !== 'plate'}>
-              阳刻（凸）{libStyle ? ' — 外部主体不支持' : ''}
+            <option value="raised" disabled={handleId !== 'none'}>
+              阳刻（凸）{handleId !== 'none' ? ' — 有把手时不可用' : ''}
             </option>
             <option value="engraved">阴刻（凹）</option>
           </select>

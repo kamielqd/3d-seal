@@ -14,8 +14,13 @@ export type BodyShape = 'square' | 'circle' | 'polygon';
  * - 只支持阴刻（阳刻要在面上挖整个凹坑，会切穿底座）
  */
 export type BodyStyleId = 'classic' | 'cylinder' | 'column' | 'dome';
-/** 主体种类：4 个内置模型 + 参数化测试片。styleId 缺省时按旧 spec 处理成 plate。 */
-export type BodyKind = BodyStyleId | 'plate';
+/** 把手：4 个内置模型之一，或没有把手（只出刻印片）。 */
+export type HandleKind = BodyStyleId | 'none';
+/**
+ * 主体种类 = 把手 + 参数化刻印片。
+ * `'plate'` 留给旧链接：它表示「无把手」，读的时候和 `'none'` 等价。
+ */
+export type BodyKind = HandleKind | 'plate';
 export type BorderStyle = 'none' | 'thin' | 'thick' | 'double';
 export type HandleStyle = 'none' | 'knob' | 'bridge';
 export type ReliefMode = 'raised' | 'engraved';
@@ -212,7 +217,7 @@ export function createDefaultSpec(): SealSpec {
       sides: 6,
       sizeMm: 30,
       cornerRadiusMm: 2,
-      baseThicknessMm: 2.5,
+      baseThicknessMm: 4,
       border: { style: 'thin', widthMm: 1.2, insetMm: 1.2 },
       styleId: 'classic',
       handle: 'knob',
