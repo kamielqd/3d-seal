@@ -1,16 +1,19 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+﻿import { useEffect, useMemo, useRef, useState } from 'react';
 import Viewer, { type ViewerMesh } from './render/Viewer.tsx';
 import {
   BODY_STYLES,
   createDefaultSpec,
-  createImageLayer,
-  createTextLayer,
+  createImageElement,
+  createPlainText,
+  createRingText,
+  createRingBorder,
   cloneLayer,
   serializeSpec,
   deserializeSpec,
+  isTextElement,
   type BodyShape,
   type BodyStyleId,
-  type ImageLayer,
+  type ImageElement,
   type HandleKind,
   type Layer,
   type SealSpec,
@@ -26,7 +29,6 @@ import About from './ui/About.tsx';
 import ElementList from './ui/ElementList.tsx';
 import CanvasEditor from './ui/CanvasEditor.tsx';
 import { BODY_THUMBS } from './ui/body-thumbs.ts';
-import { ORNAMENT_THUMBS } from './ui/ornament-thumbs.ts';
 import type { BuildResponse, ImagePayload } from './worker/geometry.worker.ts';
 import type { SolidMesh } from './geometry/types.ts';
 import type { Violation } from './geometry/printability.ts';
@@ -234,31 +236,19 @@ export default function App() {
     };
   }, [spec, imageVersion]);
 
-  /** 非图层元素（外圈 / 中心图案）在清单里的固定 id */
-  const BORDER_ID = '__border__';
-  const ORNAMENT_ID = '__ornament__';
-  const isBorderSelected = selectedId === BORDER_ID;
-  const isOrnamentSelected = selectedId === ORNAMENT_ID;
-  /** 选中的层；选中的层被删掉时退回第一层，面板不会空窗 */
+  /** 选中的元素；被删掉时退回第一个 */
   const selectedLayer: Layer | undefined =
-    isBorderSelected || isOrnamentSelected
-      ? undefined
-      : spec.layers.find((l) => l.id === selectedId) ?? spec.layers[0];
-  /** 只有选中文字层时才出文字属性；选中图像时文字面板整体收起 */
-  const textLayer = selectedLayer && selectedLayer.kind === 'text' ? selectedLayer : undefined;
-  const selectedImage =
-    selectedLayer && selectedLayer.kind === 'image' ? selectedLayer : undefined;
-  /** 属性面板里所有「改当前这个文字层」的操作都按 id 定位，不再靠「第一个文字层」 */
-  const editedId = textLayer?.id ?? null;
+    spec.layers.find((l) => l.id === selectedId) ?? spec.layers[0];
+  const textLayer = selectedLayer && isTextElement(selectedLayer) ? selectedLayer : undefined;
+  const selectedImage = selectedLayer && selectedLayer.kind === 'image' ? selectedLayer : undefined;
+  const selectedBorder = selectedLayer && selectedLayer.kind === 'border' ? selectedLayer : undefined;
+  const editedId = selectedLayer?.id ?? null;
   const fontId = textLayer ? textLayer.fontId : DEFAULT_FONT_ID;
   const fontText = textLayer ? textLayer.text : '';
   const missing = useMemo(() => checkMissing(fontText, fontId), [fontText, fontId]);
   const printIssues = violations.filter((v) => v.severity !== 'info');
-  /** 提示级：不影响出实体/导出，但用户该知道（如四字印必然出现的 0.17mm 窄缝） */
   const hints = violations.filter((v) => v.severity === 'info');
-  /** 阻断级问题：不允许导出（例如阳刻+手柄的 809mm² 悬空面） */
   const blocking = violations.some((v) => v.severity === 'error');
-  const imageLayers = spec.layers.filter((l): l is ImageLayer => l.kind === 'image');
   /** 把手：'none' / 'plate' / 缺省都算无把手 */
   const handleId: HandleKind = (() => {
     const raw = spec.body.styleId;
@@ -266,55 +256,15 @@ export default function App() {
   })();
   const handleDef = handleId === 'none' ? undefined : BODY_STYLES.find((s) => s.id === handleId);
 
-  /** 环形层的中心图案：现在作为独立元素出现在清单里 */
-  const ringLayer = spec.layers.find(
-    (l): l is Extract<Layer, { kind: 'text' }> => l.kind === 'text' && l.layout === 'ring',
-  );
-  const elementExtras = [
-    {
-      id: BORDER_ID,
-      icon: '圈',
-      label:
-        spec.body.border.style === 'none'
-          ? '外圈（无）'
-          : `外圈 ${spec.body.border.widthMm}mm`,
-      active: isBorderSelected,
-      onSelect: () => {
-        setSelectedId(BORDER_ID);
-        setInspectorTab('element');
-      },
-      onDelete: () => patch((s) => { s.body.border.style = 'none'; }),
-    },
-    ...(ringLayer
-      ? [
-          {
-            id: ORNAMENT_ID,
-            icon: '✦',
-            label:
-              ringLayer.ringOrnament && ringLayer.ringOrnament !== 'none'
-                ? `中心图案 · ${ringLayer.ringOrnament === 'star' ? '五角星' : '六芒星'}`
-                : '中心图案（无）',
-            active: isOrnamentSelected,
-            onSelect: () => {
-              setSelectedId(ORNAMENT_ID);
-              setInspectorTab('element');
-            },
-            onDelete: () =>
-              updateLayer(ringLayer.id, (l) => {
-                if (l.kind === 'text') l.ringOrnament = 'none';
-              }),
-          },
-        ]
-      : []),
-  ];
-
-  /** 画布线框用的每层轮廓；没有轮廓的层（如图像）仍然占位，只是不画框 */
-  const canvasLayers = spec.layers.map((l) => ({
-    id: l.id,
-    kind: l.kind,
-    rings: layerRings[l.id] ?? [],
-    anchor: l.anchor,
-  }));
+  /** 画布线框：只有普通文字和图片能拖（环绕文字靠半径/角度定位，边框没有位置） */
+  const canvasLayers = spec.layers
+    .filter((l) => l.kind === 'text' || l.kind === 'image')
+    .map((l) => ({
+      id: l.id,
+      kind: (l.kind === 'image' ? 'image' : 'text') as 'text' | 'image',
+      rings: layerRings[l.id] ?? [],
+      anchor: { x: (l.xPct - 50) / 50, y: (l.yPct - 50) / 50 },
+    }));
 
   const patch = (fn: (s: SealSpec) => void) => {
     setSpec((prev) => {
@@ -324,17 +274,11 @@ export default function App() {
     });
   };
 
-  const updateImage = (id: string, fn: (l: ImageLayer) => void) => {
+  const updateImage = (id: string, fn: (l: ImageElement) => void) => {
     patch((s) => {
-      const l = s.layers.find((x) => x.kind === 'image' && x.id === id);
+      const l = s.layers.find((x) => x.id === id);
       if (l && l.kind === 'image') fn(l);
     });
-  };
-
-  const removeImage = (id: string) => {
-    imagesRef.current.delete(id);
-    patch((s) => { s.layers = s.layers.filter((x) => x.id !== id); });
-    setImageVersion((v) => v + 1);
   };
 
   const pickImage = async (file: File | null) => {
@@ -342,33 +286,43 @@ export default function App() {
     setError('');
     try {
       const data = await decodeToImageData(file);
-      const layer = createImageLayer(URL.createObjectURL(file));
+      const layer = createImageElement(URL.createObjectURL(file));
       imagesRef.current.set(layer.id, data);
       patch((s) => { s.layers.push(layer); });
       setSelectedId(layer.id);
       setImageVersion((v) => v + 1);
     } catch (e) {
-      setError(`图像读取失败：${e instanceof Error ? e.message : String(e)}`);
+      setError('图像读取失败：' + (e instanceof Error ? e.message : String(e)));
     }
   };
 
-  /** 再加一个文字层：位置错开一点，否则两层叠在正中看不出是两层 */
-  const addTextLayer = () => {
-    const layer = createTextLayer({ anchor: { x: 0, y: 0.28 } });
-    patch((s) => { s.layers.push(layer); });
-    setSelectedId(layer.id);
+  const addPlainText = () => {
+    const el = createPlainText();
+    patch((s) => { s.layers.push(el); });
+    setSelectedId(el.id);
+  };
+
+  const addRingText = () => {
+    const el = createRingText();
+    patch((s) => { s.layers.push(el); });
+    setSelectedId(el.id);
+  };
+
+  const addBorder = () => {
+    const el = createRingBorder();
+    patch((s) => { s.layers.push(el); });
+    setSelectedId(el.id);
   };
 
   const duplicateLayer = (id: string) => {
     const src = spec.layers.find((l) => l.id === id);
     if (!src) return;
     const copy = cloneLayer(src);
-    // 错开一点：完全叠在原地时看起来像「复制没生效」，而且盖印预览里也分不出两层
-    copy.anchor = {
-      x: Math.max(-1, Math.min(1, src.anchor.x + 0.06)),
-      y: Math.max(-1, Math.min(1, src.anchor.y + 0.06)),
-    };
-    // 图像层的像素按 id 存，复制出来的层要共用同一份，否则新层描摹不出东西
+    // 位置类元素错开一点，避免完全重叠看不出是两份
+    if ('xPct' in copy) {
+      copy.xPct = Math.min(100, copy.xPct + 6);
+      copy.yPct = Math.min(100, copy.yPct + 6);
+    }
     if (src.kind === 'image') {
       const px = imagesRef.current.get(src.id);
       if (px) imagesRef.current.set(copy.id, px);
@@ -384,9 +338,6 @@ export default function App() {
   const deleteLayer = (id: string) => {
     const target = spec.layers.find((l) => l.id === id);
     if (!target) return;
-    // 至少留一层文字：章面上一片空白时几何会报「没有可生成的内容」，不如根本删不掉
-    const textCount = spec.layers.filter((l) => l.kind === 'text').length;
-    if (target.kind === 'text' && textCount <= 1) return;
     if (target.kind === 'image') imagesRef.current.delete(id);
     const rest = spec.layers.filter((l) => l.id !== id);
     patch((s) => { s.layers = s.layers.filter((l) => l.id !== id); });
@@ -394,7 +345,14 @@ export default function App() {
     if (target.kind === 'image') setImageVersion((v) => v + 1);
   };
 
-  /** 拖拽排序：把 id 插到 index 位置 */
+  /** 卡片上直接改字（普通文字与环绕文字都支持） */
+  const renameLayer = (id: string, text: string) => {
+    patch((s) => {
+      const l = s.layers.find((x) => x.id === id);
+      if (l && isTextElement(l)) l.text = text;
+    });
+  };
+
   const reorderLayer = (id: string, index: number) => {
     patch((s) => {
       const from = s.layers.findIndex((l) => l.id === id);
@@ -402,14 +360,6 @@ export default function App() {
       const [row] = s.layers.splice(from, 1);
       const to = Math.max(0, Math.min(s.layers.length, index));
       s.layers.splice(to, 0, row);
-    });
-  };
-
-  /** 卡片上直接改字 */
-  const renameLayer = (id: string, text: string) => {
-    patch((s) => {
-      const l = s.layers.find((x) => x.id === id);
-      if (l && l.kind === 'text') l.text = text;
     });
   };
 
@@ -628,265 +578,163 @@ export default function App() {
 
         {inspectorTab === 'element' && (
           <>
-        {isBorderSelected && (
-          <>
-            <Field label="外圈样式">
-              <select
-                value={spec.body.border.style}
-                onChange={(e) =>
-                  patch((s) => {
-                    const style = e.target.value as SealSpec['body']['border']['style'];
-                    s.body.border.style = style;
-                    s.body.border.widthMm =
-                      style === 'none' ? s.body.border.widthMm
-                        : style === 'thin' ? 0.8
-                        : style === 'thick' ? 1.6
-                        : 1.2;
-                  })
-                }
-                style={inputStyle}
-              >
-                <option value="none">无外圈</option>
-                <option value="thin">单线（细）</option>
-                <option value="thick">单线（粗）</option>
-                <option value="double">双线</option>
-              </select>
-            </Field>
-            {spec.body.border.style !== 'none' && (
+            {!selectedLayer && (
+              <div style={{ fontSize: 11.5, color: '#a39c91', lineHeight: 1.7 }}>
+                还没有选中元素。<br />
+                用左边的「＋ 文字 / 环绕文字 / 边框 / 图片」加一个，选中后这里出它的设置。
+              </div>
+            )}
+
+            {textLayer && (
               <>
-                <Field label={`线宽 ${spec.body.border.widthMm}mm`}>
-                  <input
-                    type="range" min={0.4} max={3} step={0.1} value={spec.body.border.widthMm}
-                    onChange={(e) => patch((s) => { s.body.border.widthMm = Number(e.target.value); })}
-                    style={{ width: '100%' }}
-                  />
+                <Field label="文字属性">
+                  <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                    <select
+                      value={fontId}
+                      onChange={(e) =>
+                        patch((s) => {
+                          const l = s.layers.find((x) => x.id === editedId);
+                          if (l && isTextElement(l)) l.fontId = e.target.value;
+                        })
+                      }
+                      style={{ ...inputStyle, flex: 1, minWidth: 0, padding: '4px 6px', fontSize: 12 }}
+                    >
+                      {listFonts().map((f) => (
+                        <option key={f.id} value={f.id}>{f.name}</option>
+                      ))}
+                    </select>
+                    <select
+                      value={String(textLayer.fontSizeMm)}
+                      onChange={(e) =>
+                        patch((s) => {
+                          const l = s.layers.find((x) => x.id === editedId);
+                          if (l && isTextElement(l)) l.fontSizeMm = Number(e.target.value);
+                        })
+                      }
+                      style={{ width: 62, padding: '4px 2px', fontSize: 12, border: '1px solid #ddd7cc', borderRadius: 6, background: '#fff' }}
+                    >
+                      {[3, 3.5, 4, 4.5, 5, 5.5, 6, 6.5, 7, 7.5, 8, 9, 10, 11, 12, 14].map((v) => (
+                        <option key={v} value={v}>{v}</option>
+                      ))}
+                    </select>
+                    <button
+                      title="加粗"
+                      onClick={() =>
+                        patch((s) => {
+                          const l = s.layers.find((x) => x.id === editedId);
+                          if (l && isTextElement(l)) l.bold = l.bold !== true;
+                        })
+                      }
+                      style={{
+                        width: 30, height: 28, borderRadius: 6, cursor: 'pointer',
+                        border: `1px solid ${textLayer.bold === true ? '#b3261e' : '#ddd7cc'}`,
+                        background: textLayer.bold === true ? '#fdf3f2' : '#fff',
+                        color: textLayer.bold === true ? '#b3261e' : '#3d3a34',
+                        fontWeight: 700, fontSize: 13,
+                      }}
+                    >
+                      B
+                    </button>
+                    <button
+                      title="斜体"
+                      onClick={() =>
+                        patch((s) => {
+                          const l = s.layers.find((x) => x.id === editedId);
+                          if (l && isTextElement(l)) l.italic = l.italic !== true;
+                        })
+                      }
+                      style={{
+                        width: 30, height: 28, borderRadius: 6, cursor: 'pointer',
+                        border: `1px solid ${textLayer.italic === true ? '#b3261e' : '#ddd7cc'}`,
+                        background: textLayer.italic === true ? '#fdf3f2' : '#fff',
+                        color: textLayer.italic === true ? '#b3261e' : '#3d3a34',
+                        fontStyle: 'italic', fontSize: 14, fontFamily: 'Georgia, serif',
+                      }}
+                    >
+                      I
+                    </button>
+                  </div>
                 </Field>
-                <Field label={`离边 ${spec.body.border.insetMm}mm`}>
-                  <input
-                    type="range" min={0.3} max={5} step={0.1} value={spec.body.border.insetMm}
-                    onChange={(e) => patch((s) => { s.body.border.insetMm = Number(e.target.value); })}
-                    style={{ width: '100%' }}
+
+                {missing.missing.length > 0 && (
+                  <div style={warnStyle}>
+                    <div style={{ fontWeight: 600, marginBottom: 4 }}>
+                      {fontId === 'shuowen' ? '说文未收' : '该字体缺'}：{missing.missing.join(' ')}
+                    </div>
+                  </div>
+                )}
+
+                {textLayer.kind === 'text' ? (
+                  <>
+                    {slider(`水平位置 ${textLayer.xPct}`, textLayer.xPct, 0, 100, 1, (v) =>
+                      updateLayer(textLayer.id, (l) => { if (l.kind === 'text') l.xPct = v; }))}
+                    {slider(`垂直位置 ${textLayer.yPct}`, textLayer.yPct, 0, 100, 1, (v) =>
+                      updateLayer(textLayer.id, (l) => { if (l.kind === 'text') l.yPct = v; }))}
+                    {slider(`中心旋转 ${textLayer.rotationDeg}°`, textLayer.rotationDeg, 0, 360, 1, (v) =>
+                      updateLayer(textLayer.id, (l) => { if (l.kind === 'text') l.rotationDeg = v; }))}
+                    <div style={{ fontSize: 10.5, color: '#a39c91', lineHeight: 1.5 }}>
+                      0 = 最左/最下，100 = 最右/最上（按章面直径等分）。
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    {slider(`环绕半径 ${textLayer.radiusPct}`, textLayer.radiusPct, 0, 100, 1, (v) =>
+                      updateLayer(textLayer.id, (l) => { if (l.kind === 'ringText') l.radiusPct = v; }))}
+                    {slider(`文字间距 ${textLayer.spacingPct}`, textLayer.spacingPct, 0, 100, 1, (v) =>
+                      updateLayer(textLayer.id, (l) => { if (l.kind === 'ringText') l.spacingPct = v; }))}
+                    {slider(`起点角度 ${textLayer.startDeg}°`, textLayer.startDeg, 0, 360, 1, (v) =>
+                      updateLayer(textLayer.id, (l) => { if (l.kind === 'ringText') l.startDeg = v; }))}
+                    <div style={{ fontSize: 10.5, color: '#a39c91', lineHeight: 1.5 }}>
+                      半径 100 = 字压在大圆边界上；间距 0 = 全部叠在起点，100 = 首尾相接。
+                    </div>
+                  </>
+                )}
+              </>
+            )}
+
+            {selectedBorder && (
+              <>
+                {slider(`半径 ${selectedBorder.radiusPct}`, selectedBorder.radiusPct, 0, 100, 1, (v) =>
+                  updateLayer(selectedBorder.id, (l) => { if (l.kind === 'border') l.radiusPct = v; }))}
+                {slider(`宽度 ${selectedBorder.widthPct}`, selectedBorder.widthPct, 0, 100, 1, (v) =>
+                  updateLayer(selectedBorder.id, (l) => { if (l.kind === 'border') l.widthPct = v; }))}
+                {slider(`虚线 ${selectedBorder.dashPct}`, selectedBorder.dashPct, 0, 100, 1, (v) =>
+                  updateLayer(selectedBorder.id, (l) => { if (l.kind === 'border') l.dashPct = v; }))}
+                <div style={{ fontSize: 10.5, color: '#a39c91', lineHeight: 1.5 }}>
+                  半径 100 = 环的外边缘贴住大圆；宽度 100 = 占满整个圆（最小 0.6mm）；虚线 100 = 线 0.6mm、隔 0.6mm。
+                </div>
+              </>
+            )}
+
+            {selectedImage && (
+              <>
+                {selectedImage.src && (
+                  <img
+                    src={selectedImage.src}
+                    alt="图像元素"
+                    style={{ width: '100%', borderRadius: 4, border: '1px solid #eee7dc', marginBottom: 8 }}
                   />
+                )}
+                {slider(`大小 ${selectedImage.sizePct}`, selectedImage.sizePct, 0, 100, 1, (v) =>
+                  updateImage(selectedImage.id, (x) => { x.sizePct = v; }))}
+                {slider(`水平位置 ${selectedImage.xPct}`, selectedImage.xPct, 0, 100, 1, (v) =>
+                  updateImage(selectedImage.id, (x) => { x.xPct = v; }))}
+                {slider(`垂直位置 ${selectedImage.yPct}`, selectedImage.yPct, 0, 100, 1, (v) =>
+                  updateImage(selectedImage.id, (x) => { x.yPct = v; }))}
+                {slider(`中心旋转 ${selectedImage.rotationDeg}°`, selectedImage.rotationDeg, 0, 360, 1, (v) =>
+                  updateImage(selectedImage.id, (x) => { x.rotationDeg = v; }))}
+                <Field label="描摹方式">
+                  <select
+                    value={selectedImage.trace.mode ?? 'silhouette'}
+                    onChange={(e) => updateImage(selectedImage.id, (x) => { x.trace.mode = e.target.value as 'silhouette' | 'outline'; })}
+                    style={inputStyle}
+                  >
+                    <option value="silhouette">实心块</option>
+                    <option value="outline">线框（等宽环）</option>
+                  </select>
                 </Field>
               </>
             )}
-          </>
-        )}
-
-        {isOrnamentSelected && ringLayer && (
-          <>
-            <Field label="中心图案">
-              <div style={{ display: 'flex', gap: 6 }}>
-                <button
-                  onClick={() => updateLayer(ringLayer.id, (l) => { if (l.kind === 'text') l.ringOrnament = 'none'; })}
-                  style={bodyTileStyle((ringLayer.ringOrnament ?? 'none') === 'none')}
-                >
-                  <span style={{ fontSize: 16, lineHeight: '30px' }}>○</span>
-                  <span style={{ fontSize: 10 }}>无</span>
-                </button>
-                {(['star', 'hexagram'] as const).map((oid) => (
-                  <button
-                    key={oid}
-                    title={oid === 'star' ? '五角星' : '六芒星'}
-                    onClick={() => updateLayer(ringLayer.id, (l) => { if (l.kind === 'text') l.ringOrnament = oid; })}
-                    style={bodyTileStyle((ringLayer.ringOrnament ?? 'none') === oid)}
-                  >
-                    <span
-                      style={{ display: 'block', width: 24, height: 24, color: (ringLayer.ringOrnament ?? 'none') === oid ? '#b3261e' : '#7a746b' }}
-                      dangerouslySetInnerHTML={{ __html: ORNAMENT_THUMBS[oid] }}
-                    />
-                    <span style={{ fontSize: 10 }}>{oid === 'star' ? '五角星' : '六芒星'}</span>
-                  </button>
-                ))}
-              </div>
-            </Field>
-            {ringLayer.ringOrnament && ringLayer.ringOrnament !== 'none' && (
-              <Field label={`图案尺寸 ${(ringLayer.ringOrnamentSizeMm ?? Math.round(spec.body.sizeMm * 0.28)).toFixed(0)}mm`}>
-                <input
-                  type="range" min={4} max={Math.round(spec.body.sizeMm * 0.6)} step={1}
-                  value={Math.round(ringLayer.ringOrnamentSizeMm ?? spec.body.sizeMm * 0.28)}
-                  onChange={(e) =>
-                    updateLayer(ringLayer.id, (l) => {
-                      if (l.kind === 'text') l.ringOrnamentSizeMm = Number(e.target.value);
-                    })
-                  }
-                  style={{ width: '100%' }}
-                />
-              </Field>
-            )}
-          </>
-        )}
-
-        {textLayer && (
-          <>
-        {missing.missing.length > 0 && (
-          <div style={warnStyle}>
-            <div style={{ fontWeight: 600, marginBottom: 4 }}>
-              {fontId === 'shuowen' ? '说文未收' : '该字体缺'}：{missing.missing.join(' ')}
-            </div>
-            <div style={{ opacity: 0.85, lineHeight: 1.5 }}>
-              {missing.missing
-                .map((ch) =>
-                  missing.suggestions[ch]?.length
-                    ? `${ch}→${missing.suggestions[ch].join('/')}`
-                    : `${ch}无可换字`,
-                )
-                .join('　')}
-            </div>
-            <div style={{ marginTop: 4, opacity: 0.7 }}>
-              整章换字体或换词，不逐字混排（混排盖出来是废品）。
-            </div>
-          </div>
-        )}
-
-        <Field label="文字属性">
-          <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-            <select
-              value={fontId}
-              onChange={(e) =>
-                patch((s) => {
-                  const l = s.layers.find((x) => x.id === editedId);
-                  if (l && l.kind === 'text') l.fontId = e.target.value;
-                })
-              }
-              style={{ ...inputStyle, flex: 1, minWidth: 0, padding: '4px 6px', fontSize: 12 }}
-            >
-              {listFonts().map((f) => (
-                <option key={f.id} value={f.id}>{f.name}</option>
-              ))}
-            </select>
-            <select
-              value={String(textLayer.fontSizeMm)}
-              onChange={(e) =>
-                patch((s) => {
-                  const l = s.layers.find((x) => x.id === editedId);
-                  if (l && l.kind === 'text') l.fontSizeMm = Number(e.target.value);
-                })
-              }
-              style={{ width: 62, padding: '4px 2px', fontSize: 12, border: '1px solid #ddd7cc', borderRadius: 6, background: '#fff' }}
-            >
-              {[3, 3.5, 4, 4.5, 5, 5.5, 6, 6.5, 7, 7.5, 8, 9, 10, 11, 12, 14].map((v) => (
-                <option key={v} value={v}>{v}</option>
-              ))}
-            </select>
-            <button
-              title="加粗"
-              onClick={() =>
-                patch((s) => {
-                  const l = s.layers.find((x) => x.id === editedId);
-                  if (l && l.kind === 'text') l.bold = l.bold !== true;
-                })
-              }
-              style={{
-                width: 30, height: 28, borderRadius: 6, cursor: 'pointer',
-                border: `1px solid ${textLayer.bold === true ? '#b3261e' : '#ddd7cc'}`,
-                background: textLayer.bold === true ? '#fdf3f2' : '#fff',
-                color: textLayer.bold === true ? '#b3261e' : '#3d3a34',
-                fontWeight: 700, fontSize: 13,
-              }}
-            >
-              B
-            </button>
-            <button
-              title="斜体"
-              onClick={() =>
-                patch((s) => {
-                  const l = s.layers.find((x) => x.id === editedId);
-                  if (l && l.kind === 'text') l.italic = l.italic !== true;
-                })
-              }
-              style={{
-                width: 30, height: 28, borderRadius: 6, cursor: 'pointer',
-                border: `1px solid ${textLayer.italic === true ? '#b3261e' : '#ddd7cc'}`,
-                background: textLayer.italic === true ? '#fdf3f2' : '#fff',
-                color: textLayer.italic === true ? '#b3261e' : '#3d3a34',
-                fontStyle: 'italic', fontSize: 14, fontFamily: 'Georgia, serif',
-              }}
-            >
-              I
-            </button>
-          </div>
-          <div style={{ fontSize: 10.5, color: '#a39c91', marginTop: 4, lineHeight: 1.4 }}>
-            字号单位 mm；加粗/斜体是伪粗体与 12° 斜切，不依赖字体文件
-          </div>
-        </Field>
-
-          </>
-        )}
-
-        {imageLayers.filter((l) => l.id === selectedImage?.id).map((l) => (
-          <div key={l.id} style={cardStyle}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-              <strong style={{ fontSize: 12 }}>图像图层</strong>
-              <button onClick={() => removeImage(l.id)} style={miniBtnStyle}>移除</button>
-            </div>
-            {l.src ? (
-              <img
-                src={l.src}
-                alt="图像图层"
-                style={{ width: '100%', borderRadius: 4, border: '1px solid #eee7dc', marginBottom: 8 }}
-              />
-            ) : (
-              <div style={hintStyle}>分享链接不含像素，请重新导入这张图</div>
-            )}
-
-            <Field label={`图案宽度 ${l.widthMm}mm`}>
-              <input
-                type="range" min={5} max={40} step={1} value={l.widthMm}
-                onChange={(e) => updateImage(l.id, (x) => { x.widthMm = Number(e.target.value); })}
-                style={{ width: '100%' }}
-              />
-            </Field>
-
-            <Field label={l.trace.autoThreshold ? '阈值：自动（Otsu）' : `阈值 ${l.trace.threshold.toFixed(2)}`}>
-              <input
-                type="range" min={0.05} max={0.95} step={0.05} value={l.trace.threshold}
-                disabled={l.trace.autoThreshold}
-                onChange={(e) =>
-                  updateImage(l.id, (x) => {
-                    x.trace.threshold = Number(e.target.value);
-                    x.trace.autoThreshold = false;
-                  })
-                }
-                style={{ width: '100%', opacity: l.trace.autoThreshold ? 0.45 : 1 }}
-              />
-              <label style={checkRowStyle}>
-                <input
-                  type="checkbox" checked={l.trace.autoThreshold}
-                  onChange={(e) => updateImage(l.id, (x) => { x.trace.autoThreshold = e.target.checked; })}
-                />
-                自动阈值（Otsu）
-              </label>
-              <label style={checkRowStyle}>
-                <input
-                  type="checkbox" checked={l.trace.invert}
-                  onChange={(e) => updateImage(l.id, (x) => { x.trace.invert = e.target.checked; })}
-                />
-                反相（深色当墨）
-              </label>
-            </Field>
-
-            <Field label="描摹方式">
-              <select
-                value={l.trace.mode ?? 'silhouette'}
-                onChange={(e) => updateImage(l.id, (x) => { x.trace.mode = e.target.value as 'silhouette' | 'outline'; })}
-                style={inputStyle}
-              >
-                <option value="silhouette">实心块</option>
-                <option value="outline">线框（等宽环，线稿风）</option>
-              </select>
-            </Field>
-
-            <Field label={`去噪：丢弃小于 ${l.trace.despeckleAreaMm2}mm² 的碎块`}>
-              <input
-                type="range" min={0} max={10} step={0.5} value={l.trace.despeckleAreaMm2}
-                onChange={(e) => updateImage(l.id, (x) => { x.trace.despeckleAreaMm2 = Number(e.target.value); })}
-                style={{ width: '100%' }}
-              />
-            </Field>
-          </div>
-        ))}
-
           </>
         )}
       </aside>
@@ -906,10 +754,11 @@ export default function App() {
       >
         <ElementList
           layers={spec.layers}
-          extras={elementExtras}
-          selectedId={selectedLayer?.id ?? (isBorderSelected ? BORDER_ID : isOrnamentSelected ? ORNAMENT_ID : null)}
+          selectedId={selectedLayer?.id ?? null}
           onSelect={setSelectedId}
-          onAddText={addTextLayer}
+          onAddText={addPlainText}
+          onAddRingText={addRingText}
+          onAddBorder={addBorder}
           onAddImage={(f) => { void pickImage(f); }}
           onDelete={deleteLayer}
           onDuplicate={duplicateLayer}
@@ -967,7 +816,12 @@ export default function App() {
                   selectedId={selectedLayer?.id ?? null}
                   onSelect={setSelectedId}
                   onAnchor={(id, x, y) =>
-                    updateLayer(id, (l) => { l.anchor.x = x; l.anchor.y = y; })
+                    updateLayer(id, (l) => {
+                      if ('xPct' in l) {
+                        l.xPct = Math.max(0, Math.min(100, 50 + x * 50));
+                        l.yPct = Math.max(0, Math.min(100, 50 + y * 50));
+                      }
+                    })
                   }
                 />
               </div>
@@ -1083,6 +937,30 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
+/** 0–100 / 0–360 的默认滑条：元素参数几乎都是这种「一条滑条 + 数值」的形状 */
+function slider(
+  label: string,
+  value: number,
+  min: number,
+  max: number,
+  step: number,
+  onChange: (v: number) => void,
+) {
+  return (
+    <Field label={label}>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+        style={{ width: '100%' }}
+      />
+    </Field>
+  );
+}
+
 const inputStyle: React.CSSProperties = {
   width: '100%',
   padding: '6px 8px',
@@ -1126,13 +1004,6 @@ const bodyTileStyle = (active: boolean): React.CSSProperties => ({
   lineHeight: 1,
 });
 
-const cardStyle: React.CSSProperties = {
-  marginTop: 10,
-  padding: '10px 10px 2px',
-  border: '1px solid #e6e2da',
-  borderRadius: 8,
-  background: '#fff',
-};
 
 const miniBtnStyle: React.CSSProperties = {
   padding: '3px 8px',
@@ -1143,21 +1014,7 @@ const miniBtnStyle: React.CSSProperties = {
   cursor: 'pointer',
 };
 
-const hintStyle: React.CSSProperties = {
-  fontSize: 11,
-  color: '#a39c91',
-  marginBottom: 8,
-  lineHeight: 1.5,
-};
 
-const checkRowStyle: React.CSSProperties = {
-  display: 'flex',
-  alignItems: 'center',
-  gap: 5,
-  fontSize: 12,
-  marginTop: 4,
-  color: '#5a5348',
-};
 
 /**
  * 图片 → ImageData，长边限制 720px。

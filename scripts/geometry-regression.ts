@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 几何回归测试：填充规则 / 孔保留 / 最小笔画与间隙落地 / 校验高亮。
  * 跑法：node --experimental-strip-types scripts/geometry-regression.ts
  *
@@ -11,7 +11,7 @@ import type { BodyStyleId } from '../src/geometry/body-library.ts';
 import { borderPolygons, borderSection, bodySection, buildSeal } from '../src/geometry/pipeline.ts';
 import { TraceEmptyError, combinePolygons, traceImageData, traceLayer } from '../src/geometry/trace.ts';
 import type { ImageDataLike } from '../src/geometry/trace.ts';
-import { createImageLayer } from '../src/core/spec.ts';
+import { createImageElement } from '../src/core/spec.ts';
 import {
   getManifold,
   prepareSectionWithReport,
@@ -465,12 +465,12 @@ try {
 }
 check(traceErr instanceof TraceEmptyError && traceErr.code === 'TRACE_EMPTY', '空图 → TRACE_EMPTY', traceErr instanceof TraceEmptyError ? traceErr.suggestion : String(traceErr));
 
-const layer = createImageLayer('', { anchor: { x: 0.5, y: 0 }, transform: { rotateDeg: 0, scale: 1 } });
+const layer = createImageElement('', { xPct: 75, yPct: 50, rotationDeg: 0 });
 const placed = await traceLayer(layer, square, { bodySizeMm: 30 });
 const xs = placed.flatMap((p) => p.outer.map(([x]) => x));
 check(Math.abs((Math.min(...xs) + Math.max(...xs)) / 2 - 7.5) < 0.2, 'traceLayer：anchor(0.5,0) 把图案中心移到 x=7.5', `center=${((Math.min(...xs) + Math.max(...xs)) / 2).toFixed(2)}`);
 
-const outlineLayer = createImageLayer('', { widthMm: 20, anchor: { x: 0, y: 0 }, transform: { rotateDeg: 0, scale: 1 } });
+const outlineLayer = createImageElement('', { sizePct: 100, xPct: 50, yPct: 50, rotationDeg: 0 });
 const ring = await traceLayer(outlineLayer, square, { bodySizeMm: 20, mode: 'outline', outlineWidthMm: 0.6 });
 const ringArea = ring.reduce((sum, p) => sum + Math.abs(shoelace(p.outer)) - p.holes.reduce((s, h) => s + Math.abs(shoelace(h)), 0), 0);
 check(ringArea > 10 && ringArea < 40, 'outline 模式：实心块变成等宽环', `环面积≈${ringArea.toFixed(1)}mm²`);
@@ -489,7 +489,7 @@ check(overlap?.severity === 'warn' && overlap.measured >= 10, '文字/图像同�
 check(Boolean(overlap?.highlight?.bbox), '重叠提示带高亮框', '');
 
 /* ---------- 11. 边框环 ---------- */
-const squareBody = { ...baseSpec.body, cornerRadiusMm: 0 };
+const squareBody = { ...baseSpec.body, shape: 'square' as const, cornerRadiusMm: 0, border: { style: 'thin' as const, widthMm: 1.2, insetMm: 1.2 } };
 const baseSec = bodySection(await getManifold(), squareBody);
 const thinRing = borderSection(baseSec, { style: 'thin', widthMm: 1.2, insetMm: 1.2 });
 check(thinRing !== null && Math.abs(thinRing.area() - 126.72) < 2, 'thin 边框面积 ≈126.7mm²', thinRing ? `${thinRing.area().toFixed(2)}` : 'null');

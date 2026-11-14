@@ -14,7 +14,7 @@
 
 import { groupContours, simplifyContour } from './polygon.ts';
 import { prepareSection, fromCrossSection, getManifold, sectionFromPolygons } from './crosssection.ts';
-import type { ImageLayer } from '../core/spec.ts';
+import type { ImageElement } from '../core/spec.ts';
 import type { Polygon2D, Vec2 } from './types.ts';
 
 /** 与 DOM 的 ImageData 兼容的最小结构（Node 里传普通对象即可）。 */
@@ -415,14 +415,14 @@ function emptySuggestion(stats: TraceStats | null, cfg: { threshold: number; des
  * - 空结果抛 TraceEmptyError（code=TRACE_EMPTY），message 里直接带建议
  */
 export async function traceLayer(
-  layer: ImageLayer,
+  layer: ImageElement,
   image: ImageDataLike,
   placement: LayerPlacement,
 ): Promise<Polygon2D[]> {
   const widthPx = image.width || 1;
-  const scale = layer.transform.scale > 0 ? layer.transform.scale : 1;
-  const widthMm = layer.widthMm > 0 ? layer.widthMm : Math.max(1, placement.bodySizeMm * 0.6);
-  const mmPerPx = (widthMm * scale) / widthPx;
+  // 新模型：sizePct 是「占章面直径的百分比」，100 = 占满整个大圆
+  const widthMm = Math.max(1, (Math.max(0, Math.min(100, layer.sizePct)) / 100) * placement.bodySizeMm);
+  const mmPerPx = widthMm / widthPx;
 
   let polygons = await traceImageData(image, {
     autoThreshold: layer.trace.autoThreshold,
@@ -439,11 +439,12 @@ export async function traceLayer(
     polygons = await toOutline(polygons, placement.outlineWidthMm ?? 0.6);
   }
 
-  const rad = (layer.transform.rotateDeg * Math.PI) / 180;
+  const rad = (layer.rotationDeg * Math.PI) / 180;
   const cos = Math.cos(rad);
   const sin = Math.sin(rad);
-  const dx = (layer.anchor.x * placement.bodySizeMm) / 2;
-  const dy = (layer.anchor.y * placement.bodySizeMm) / 2;
+  // 新模型：xPct/yPct 是 0–100 的直径百分比（0 = 最左/最下）
+  const dx = ((Math.max(0, Math.min(100, layer.xPct)) - 50) / 100) * placement.bodySizeMm;
+  const dy = ((Math.max(0, Math.min(100, layer.yPct)) - 50) / 100) * placement.bodySizeMm;
   const place = (contour: Vec2): Vec2 =>
     [contour[0] * cos - contour[1] * sin + dx, contour[0] * sin + contour[1] * cos + dy];
 

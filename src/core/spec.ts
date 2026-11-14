@@ -98,68 +98,28 @@ export interface Transform {
   scale: number;
 }
 
-export interface TextLayer {
-  kind: 'text';
-  id: string;
-  text: string;
-  fontId: string;
-  layout: TextLayout;
-  fontSizeMm: number;
-  letterSpacingMm: number;
-  /**
-   * 文字塞不下章面时自动等比缩字号与字距（默认开）。
-   * 缩过之后包围盒会落在章面内，`pattern.bounds` 不再报错，导出也不会被禁用；
-   * 实际生效的字号由 `layoutFlatWithFit()` 回传，面板上要如实显示。
-   */
-  autoFit?: boolean;
-  /** 加粗：字形轮廓整体外扩（等价于伪粗体，不依赖字体文件里有没有 Bold） */
-  bold?: boolean;
-  /** 斜体：整层按 12° 斜切（伪斜体，同样不依赖字体文件） */
-  italic?: boolean;
-  lineHeight: number;
-  /** ring 专用 */
-  ringStartDeg: number;
-  ringSpanDeg: number;
-  /**
-   * 环形章的中心图案。当作普通图案参与布尔（阴刻即刻掉），不是凸起浮雕。
-   * 只在 layout === 'ring' 时生效。
-   */
-  ringOrnament?: RingOrnament;
-  /** 中心图案外接尺寸（mm）；不传按章面直径的 0.28 倍 */
-  ringOrnamentSizeMm?: number;
-  anchor: Anchor;
-  transform: Transform;
-}
+/* ------------------------------------------------------------------ */
+/* 元素：定义搬到 elements.ts，这里只做转出                              */
+/* ------------------------------------------------------------------ */
 
-export interface ImageLayer {
-  kind: 'image';
-  id: string;
-  /** 运行时为 dataURL 或 blob URL，不参与序列化 */
-  src: string;
-  /**
-   * 图像在章面上的物理宽度（mm）。描摹时的 mm/px 由它和图片像素宽度推出来，
-   * 不让用户在 UI 上直接调 mm/px（不可预期）。
-   */
-  widthMm: number;
-  trace: {
-    /** Otsu 自动阈值；true 时忽略 threshold */
-    autoThreshold: boolean;
-    threshold: number;
-    invert: boolean;
-    /** 去噪：小于该面积(mm²)的岛直接丢弃 */
-    despeckleAreaMm2: number;
-    /** 简化容差 mm */
-    simplifyMm: number;
-    /** 描摹模式：silhouette = 实心（默认），outline = 实心转等宽环（线稿风） */
-    mode?: 'silhouette' | 'outline';
-    /** outline 模式的线宽（mm），默认 0.6 */
-    outlineWidthMm?: number;
-  };
-  anchor: Anchor;
-  transform: Transform;
-}
-
-export type Layer = TextLayer | ImageLayer;
+export type {
+  PlainTextElement,
+  RingTextElement,
+  RingBorderElement,
+  ImageElement,
+  Layer,
+  TextElement,
+} from './elements.ts';
+export {
+  createPlainText,
+  createRingText,
+  createRingBorder,
+  createImageElement,
+  isTextElement,
+  newLayerId,
+} from './elements.ts';
+import type { Layer } from './elements.ts';
+import { newLayerId } from './elements.ts';
 
 export interface PrintConfig {
   process: PrintProcess;
@@ -213,72 +173,32 @@ export function createDefaultSpec(): SealSpec {
   return {
     version: 1,
     body: {
-      shape: 'square',
+      // 圆形章优先：大圆是一切元素定位的基准
+      shape: 'circle',
       sides: 6,
       sizeMm: 30,
       cornerRadiusMm: 2,
       baseThicknessMm: 4,
-      border: { style: 'thin', widthMm: 1.2, insetMm: 1.2 },
+      border: { style: 'none', widthMm: 1.2, insetMm: 1.2 },
       styleId: 'classic',
       handle: 'knob',
       handleHeightMm: 16,
       handleDiameterMm: 16,
     },
-    // 默认阴刻：贴床零支撑，是 FDM 上唯一不用支撑就能打的组合（见 DESIGN §6 bridge.span）
     relief: { mode: 'engraved', depthMm: FDM_LIMITS.reliefDepthMm },
-    layers: [createTextLayer()],
+    // 默认**没有任何元素**：文字、环绕文字、边框、图片都由用户自己添加
+    layers: [],
     print: { process: 'fdm', ...{ minStrokeMm: FDM_LIMITS.minStrokeMm, minGapMm: FDM_LIMITS.minGapMm }, orientation: 'face-down' },
   };
 }
 
-export function createTextLayer(init: Partial<TextLayer> = {}): TextLayer {
-  return {
-    kind: 'text',
-    id: uid('t'),
-    text: '印章工坊',
-    fontId: 'smiley-sans',
-    layout: 'horizontal',
-    fontSizeMm: 7,
-    letterSpacingMm: 0.6,
-    bold: false,
-    italic: false,
-    lineHeight: 1.15,
-    ringStartDeg: 90,
-    ringSpanDeg: 240,
-    anchor: { x: 0, y: 0 },
-    transform: { rotateDeg: 0, scale: 1 },
-    ...init,
-  };
-}
-
-export function createImageLayer(src: string, init: Partial<ImageLayer> = {}): ImageLayer {  return {
-    kind: 'image',
-    id: uid('i'),
-    src,
-    widthMm: 18,
-    trace: {
-      autoThreshold: true,
-      threshold: 0.5,
-      invert: false,
-      despeckleAreaMm2: 0.2,
-      simplifyMm: 0.08,
-    },
-    anchor: { x: 0, y: 0 },
-    transform: { rotateDeg: 0, scale: 1 },
-    ...init,
-  };
-}
-
-/**
- * 复制一层：深拷贝并换新 id。
- * 图像层只复制 `src` 字符串（同一个 blob URL），不重复占内存；
- * 像素本体在 App 里按 id 存着，复制后要另存一份，由调用方负责。
- */
+/** 复制一个元素：深拷贝并换新 id（图像只复制 src 字符串，像素由调用方另存） */
 export function cloneLayer(layer: Layer): Layer {
   const copy = structuredClone(layer);
-  copy.id = uid(layer.kind === 'text' ? 't' : 'i');
+  copy.id = newLayerId(layer.kind);
   return copy;
 }
+
 
 /* ------------------------------------------------------------------ */
 /* 序列化：分享链接用（不含图片二进制）                               */
